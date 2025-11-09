@@ -134,7 +134,7 @@ class TDRWindow(QtWidgets.QWidget):
         self.distance_axis: npt.NDArray[np.float64]
         self.step_response_Z: npt.NDArray[np.float64]
 
-        self.setWindowTitle("TDR")
+        self.setWindowTitle("TDR!")
         self.setWindowIcon(get_window_icon())
 
         QShortcut(Qt.Key.Key_Escape, self, self.hide)

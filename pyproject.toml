@@ -22,6 +22,7 @@ classifiers =[
   'Programming Language :: Python :: 3.12',
   'Programming Language :: Python :: 3.13',
 ]
+
 keywords = ["Communications", "Ham Radio", "nanovna"]
 dynamic=['version']
 
@@ -137,6 +138,7 @@ select = [
     'C',        # mccabe
     'RUF',      # Ruff
 ]
+
 ignore = [
     'PLR2004',
     'N802',

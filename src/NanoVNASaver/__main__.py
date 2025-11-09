@@ -67,6 +67,7 @@ def main():
     parser.add_argument(
         "--version", action="version", version=f"NanoVNASaver {VERSION}"
     )
+    parser.add_argument("--test-stand", action="store_true", help="Run TestStand instead of NanoVNASaver")
     args = parser.parse_args()
 
     console_log_level = logging.WARNING
@@ -103,6 +104,11 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     window = NanoVNASaver()
+    
+    if args.test_stand:
+        from NanoVNASaver.TestStand import NanoVNASaver as TestStandWindow
+        window = TestStandWindow()
+
     window.show()
 
     if args.auto_connect:
