@@ -117,6 +117,7 @@ class NanoVNASaver(QWidget):
         btn_load_cal.setMinimumHeight(48)
         btn_load_cal.clicked.connect(lambda: self.display_window("about"))
 
+        cal_file_name = QtWidgets.QLabel("No calibration file loaded")
 
         btn_res_folder = QtWidgets.QPushButton("Open test results folder")
         btn_res_folder.setMinimumHeight(28)
@@ -141,6 +142,7 @@ class NanoVNASaver(QWidget):
         inp_points.setPlaceholderText("5")
 
         left_col.addWidget(btn_load_cal)
+        left_col.addWidget(cal_file_name)
         left_col.addSpacing(8)
         left_col.addWidget(lbl_start)
         left_col.addWidget(inp_start)
@@ -155,7 +157,7 @@ class NanoVNASaver(QWidget):
 
         left_widget = QtWidgets.QWidget()
         left_widget.setLayout(left_col)
-        left_widget.setMinimumWidth(500)
+        left_widget.setMinimumWidth(200)
 
         # Right column
         right_col = QtWidgets.QVBoxLayout()
