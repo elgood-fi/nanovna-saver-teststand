@@ -94,7 +94,7 @@ class NanoVNASaver(QWidget):
         super().__init__()
         self.setWindowIcon(get_window_icon())
         self.version = VERSION
-        self.baseTitle = f"NanoVNA Saver {self.version} (TestStand)"
+        self.baseTitle = f"Filter test stand (NanoVNASaver version: {self.version})"
         self.setWindowTitle(self.baseTitle)
 
         # Minimal windows dict so display_window works
@@ -114,16 +114,31 @@ class NanoVNASaver(QWidget):
         # Left column
         left_col = QtWidgets.QVBoxLayout()
         btn_load_cal = QtWidgets.QPushButton("Load calibration file")
-        btn_load_cal.setMinimumHeight(28)
+        btn_load_cal.setMinimumHeight(48)
         btn_load_cal.clicked.connect(lambda: self.display_window("about"))
 
-        lbl_start = QtWidgets.QLabel("Sweep start frequency")
+
+        btn_res_folder = QtWidgets.QPushButton("Open test results folder")
+        btn_res_folder.setMinimumHeight(28)
+        btn_res_folder.clicked.connect(lambda: self.display_window("about"))
+
+        btn_log = QtWidgets.QPushButton("Display test log")
+        btn_log.setMinimumHeight(28)
+        btn_log.clicked.connect(lambda: self.display_window("about"))
+        
+        
+
+        lbl_start = QtWidgets.QLabel("Start frequency")
         inp_start = QtWidgets.QLineEdit()
         inp_start.setPlaceholderText("Start (Hz)")
 
-        lbl_end = QtWidgets.QLabel("Sweep end frequency")
+        lbl_end = QtWidgets.QLabel("End frequency")
         inp_end = QtWidgets.QLineEdit()
         inp_end.setPlaceholderText("End (Hz)")
+
+        lbl_points = QtWidgets.QLabel("Number of measurement points")
+        inp_points = QtWidgets.QLineEdit()
+        inp_points.setPlaceholderText("5")
 
         left_col.addWidget(btn_load_cal)
         left_col.addSpacing(8)
@@ -131,14 +146,30 @@ class NanoVNASaver(QWidget):
         left_col.addWidget(inp_start)
         left_col.addWidget(lbl_end)
         left_col.addWidget(inp_end)
+        left_col.addWidget(lbl_points)
+        left_col.addWidget(inp_points)
+        left_col.addSpacing(8)
+        left_col.addWidget(btn_res_folder)
+        left_col.addWidget(btn_log)
         left_col.addStretch(1)
 
         left_widget = QtWidgets.QWidget()
         left_widget.setLayout(left_col)
-        #left_widget.setMinimumWidth(260)
+        left_widget.setMinimumWidth(500)
 
         # Right column
         right_col = QtWidgets.QVBoxLayout()
+        
+        sample_id = QtWidgets.QLabel("Sample #0000001")
+        sample_id.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        sample_id.setStyleSheet("""
+        QLabel {
+        color: black;
+        font-size: 18px;
+        padding: 10px;
+        }
+        """)
+
         
 
         status = QtWidgets.QLabel("PASS")
@@ -149,14 +180,32 @@ class NanoVNASaver(QWidget):
         padding: 10px;
         }
         """)
-        status.setMinimumHeight(200)
+        status.setMinimumHeight(80)
         #status.setMinimumWidth(260)
         status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         btn_test = QtWidgets.QPushButton("Test")
-        btn_test.setMinimumHeight(100)
+        btn_test.setMinimumHeight(80)
         btn_test.clicked.connect(lambda: self.display_window("about"))
 
+        test_sequence = QtWidgets.QListWidget()
+        #placeholder test log
+        test_sequence.addItem("Reading calibration file... OK")
+        test_sequence.addItem("Measuring point #1 ... OK")
+        test_sequence.addItem("Measuring point #2 ... OK")
+        test_sequence.addItem("Measuring point #3 ... OK")
+        test_sequence.addItem("Measuring point #4 ... OK")
+        test_sequence.addItem("Measuring point #5 ... OK")
+        test_sequence.addItem("Writing result file ... OK")
+        test_sequence.addItem("Printing label... OK")
+        success = QtWidgets.QListWidgetItem("Success! All tests passed.")
+        success.setForeground(QtGui.QBrush(QtGui.QColor("Green")))
+        test_sequence.addItem(success)
+        test_sequence.setMinimumHeight(200)
+ 
+
+        right_col.addWidget(sample_id)
         right_col.addWidget(status)
+        right_col.addWidget(test_sequence)
         right_col.addWidget(btn_test)
         right_col.addStretch(1)
 
@@ -165,8 +214,21 @@ class NanoVNASaver(QWidget):
 
         test_layout.addWidget(left_widget)
         test_layout.addWidget(right_widget)
+        test_layout.setStretch(0, 0)
+        test_layout.setStretch(1, 1)
+    
 
         main_layout.addWidget(test_widget)
+
+        '''
+        # Full-width placeholder row under the two columns
+        placeholder = QtWidgets.QLabel("placeholder")
+        placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        
+        # Give it a bit of vertical presence
+        placeholder.setMinimumHeight(30)
+        main_layout.addWidget(placeholder)
+        '''
 
     def auto_connect(
         self,
@@ -346,7 +408,7 @@ class NanoVNASaver(QWidget):
         self.btnResetReference.setDisabled(True)
 
     def sizeHint(self) -> QtCore.QSize:
-        return QtCore.QSize(1100, 950)
+        return QtCore.QSize(1100, 400)
 
     def display_window(self, name):
         self.windows[name].show()
