@@ -44,9 +44,9 @@ class CalibrationControl(Control):
         self.status_label = QtWidgets.QLabel("No cal")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setMinimumHeight(34)
-        self.status_label.setStyleSheet(
-            "background-color: #F44336; color: white; padding: 4px; border-radius: 4px;"
-        )
+        #self.status_label.setStyleSheet(
+        #    "background-color: #F44336; color: white; padding: 4px; border-radius: 4px;"
+        #)
         # Add the label as a full-width row
         self.layout.addRow(self.status_label)
 
@@ -61,7 +61,7 @@ class CalibrationControl(Control):
         # In a real control this would open a file dialog and load data.
         # For now we just reflect a loaded state in the UI.
         self.status_label.setText("Loaded")
-        self.status_label.setStyleSheet(
-            "background-color: #4CAF50; color: white; padding: 4px; border-radius: 4px;"
-        )
+        #self.status_label.setStyleSheet(
+        #    "background-color: #4CAF50; color: white; padding: 4px; border-radius: 4px;"
+        #)
         self.calibration_loaded.emit(True)

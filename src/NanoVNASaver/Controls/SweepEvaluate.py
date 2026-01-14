@@ -20,6 +20,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6 import QtCore, QtWidgets, QtGui
+from PySide6.QtCore import Qt
 from pathlib import Path
 
 from ..Defaults import SweepConfig, get_app_config
@@ -161,21 +162,94 @@ class SweepEvaluate(Control):
         left_column = QtWidgets.QVBoxLayout() 
         btn_test = QtWidgets.QPushButton("Test")
         btn_test.setMinimumHeight(80)
-        btn_test.setFixedWidth(300)
+        #btn_test.setFixedWidth(350)
         btn_test.clicked.connect(self.app.sweep_start)
         left_column.addWidget(btn_test)
         #btn_test.clicked.connect(self.on_run_sequence_btn)
-        right_column = QtWidgets.QVBoxLayout()
+        middle_column = QtWidgets.QFormLayout()
+        self.golden_title = QtWidgets.QLabel("Golden sample")
+        self.golden_label = QtWidgets.QLabel("N/A")
+        self.golden_label.setAlignment(Qt.AlignCenter)
+        #self.golden_label.setMinimumHeight(34)
+        self.golden_label.setStyleSheet(
+            "padding: 1px; border-radius: 4px; border: 2px solid #666;"
+        )
+        # Add the label as a full-width row
+        status_display = QtWidgets.QFormLayout() 
+        
+        '''
+        status_title = QtWidgets.QLabel("Test configuration status")
+        status_display.addRow(status_title)
+
+        conn_row = QtWidgets.QHBoxLayout()
+        conn_indicator = QtWidgets.QLabel("Not connected")
+        conn_indicator.setStyleSheet(
+            "background-color: #F44336; color: white; padding: 1px; border-radius: 4px;"
+        )
+        connection = QtWidgets.QLabel("Connection")
+        conn_row.addWidget(connection)
+        conn_row.addWidget(conn_indicator)
+        status_display.addRow(conn_row) 
+        
+
+        cal_row = QtWidgets.QHBoxLayout()
+        cal_indicator = QtWidgets.QLabel("Calibration not loaded")
+        cal_indicator.setStyleSheet(
+            "background-color: #F44336; color: white; padding: 1px; border-radius: 4px;"
+        )
+        calibration = QtWidgets.QLabel("Calibration")
+        cal_row.addWidget(calibration)
+        cal_row.addWidget(cal_indicator)
+        status_display.addRow(cal_row) 
+        '''
+
+        btn_golden= QtWidgets.QPushButton("Test golden sample")
+        btn_golden.setFixedHeight(40)
+        btn_golden_set= QtWidgets.QPushButton("Set as reference")
+        btn_golden_set.setFixedHeight(40)
+        middle_top_row = QtWidgets.QVBoxLayout()
+
+        middle_top_row.addWidget(self.golden_title)
+        middle_top_row.addWidget(self.golden_label)
+        
+        middle_bot_row = QtWidgets.QHBoxLayout()
+        middle_bot_row.addWidget(btn_golden)
+        middle_bot_row.addWidget(btn_golden_set)
+
+        middle_column.addRow(middle_top_row)
+        middle_column.addRow(middle_bot_row)
+
+
+        right_column = QtWidgets.QFormLayout()
+        self.spec_title = QtWidgets.QLabel("Test program")
         self.spec_label = QtWidgets.QLabel("No program loaded")
         self.spec_label.setWordWrap(True)
+        self.spec_label.setStyleSheet(
+            "padding: 1px; border-radius: 4px; border: 2px solid #666;"
+        )
+        self.spec_label.setAlignment(Qt.AlignCenter)
+
+        right_top_row = QtWidgets.QVBoxLayout()
+        right_top_row.addWidget(self.spec_title)
+        right_top_row.addWidget(self.spec_label)
+
         btn_load = QtWidgets.QPushButton("Load program...")
         btn_load.setFixedHeight(40)
         btn_load.clicked.connect(self.load_spec_dialog)
-        right_column.addWidget(self.spec_label)
-        right_column.addWidget(btn_load)
+
+        right_bottom_row = QtWidgets.QHBoxLayout()
+        right_bottom_row.addWidget(btn_load)
+
+
+        right_column.addRow(right_top_row)
+        right_column.addRow(right_bottom_row)
+        
         test_layout = QtWidgets.QHBoxLayout()
         test_layout.addLayout(left_column)
+        test_layout.addLayout(status_display)
+        test_layout.addLayout(middle_column)
         test_layout.addLayout(right_column)
+        
         #test_layout.addWidget(self.progress_bar)
 
         #opts_layout.addWidget(self.auto_eval)

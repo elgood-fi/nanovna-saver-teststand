@@ -98,7 +98,6 @@ class NanoVNASaver(QWidget):
     def __init__(self, no_save_config: bool = False, no_load_config: bool = False) -> None:
         super().__init__()
         self.no_save_config = no_save_config or os.environ.get('NANOVNASAVER_NO_SAVE') == '1'
-        self.no_load_config = no_load_config or os.environ.get('NANOVNASAVER_NO_LOAD') == '1'
         self.communicate = Communicate()
         self.s21att = 0.0
         self.setWindowIcon(get_window_icon())

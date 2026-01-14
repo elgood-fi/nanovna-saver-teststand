@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 # pylint: disable=too-many-instance-attributes
 @dataclass
 class GuiConfig:
-    window_height: int = 950
-    window_width: int = 1700
+    window_height: int = 900
+    window_width: int = 1800
     font_size: int = 8
     custom_colors: bool = False
     dark_mode: bool = False
