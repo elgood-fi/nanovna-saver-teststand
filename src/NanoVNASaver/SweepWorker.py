@@ -64,9 +64,13 @@ class WorkerSignals(QObject):
 
 class SweepWorker(QThread):
     def __init__(self, app: "vna_app") -> None:
-        super().__init__()
+        # Parent the QThread to the application widget to ensure it isn't
+        # garbage collected while the underlying thread is still running.
+        super().__init__(app)
         logger.info("Initializing SweepWorker")
-        self.signals: WorkerSignals = WorkerSignals()
+        # Parent the signals object to the thread to keep it alive
+        # for the lifetime of the thread.
+        self.signals: WorkerSignals = WorkerSignals(self)
         self.app = app
         self.sweep = Sweep()
         self.percentage: float = 0.0

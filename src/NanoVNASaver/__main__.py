@@ -68,6 +68,8 @@ def main():
         "--version", action="version", version=f"NanoVNASaver {VERSION}"
     )
     parser.add_argument("--test-stand", action="store_true", help="Run TestStand instead of NanoVNASaver")
+    parser.add_argument("--no-save-config", action="store_true", help="Do not persist UI settings")
+    parser.add_argument("--no-load-config", action="store_true", help="Do not load saved UI settings (start with defaults)")
     args = parser.parse_args()
 
     console_log_level = logging.WARNING
@@ -103,11 +105,11 @@ def main():
     logger.info("Startup...")
 
     app = QtWidgets.QApplication(sys.argv)
-    window = NanoVNASaver()
+    window = NanoVNASaver(no_save_config=args.no_save_config, no_load_config=args.no_load_config)
     
     if args.test_stand:
         from NanoVNASaver.TestStand import NanoVNASaver as TestStandWindow
-        window = TestStandWindow()
+        window = TestStandWindow(no_save_config=args.no_save_config, no_load_config=args.no_load_config)
 
     window.show()
 

@@ -62,3 +62,10 @@ src/NanoVNASaver/Windows/ui/about.py
 
 *.spec
 *_rc.py
+*.cal
+*.json
+
+src/test_results/*
+src/NanoVNASaver/TestStand_old.py
+src/NanoVNASaver/TestStand_serial.py
+src/NanoVNASaver/TestStand_parallel1.py

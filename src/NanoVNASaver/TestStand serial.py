@@ -55,6 +55,7 @@ from .Charts.Chart import Chart
 from .Controls.MarkerControl import MarkerControl
 from .Controls.SerialControl import SerialControl
 from .Controls.SweepControl import SweepControl
+from .Controls.SweepAutomation import SweepAutomation
 from .Defaults import APP_SETTINGS, AppSettings, get_app_config
 from .Formatting import format_frequency, format_gain, format_vswr
 from .Hardware.Hardware import Interface
@@ -126,7 +127,9 @@ class NanoVNASaver(QWidget):
         self.vna: VNA = VNA(self.interface)
 
         self.calibration: Calibration = Calibration()
-        self.sweep_control = SweepControl(self)
+        self.sweep_control = SweepAutomation(self)
+        self.sweep_automation = SweepAutomation(self)
+        #self.sweep_control.setMinimumWidth(460)
         self.marker_control = MarkerControl(self)
         self.serial_control = SerialControl(self)
         self.serial_control.connected.connect(
@@ -144,7 +147,7 @@ class NanoVNASaver(QWidget):
 
         logger.debug("Building user interface")
 
-        self.baseTitle = f"NanoVNA Saver {NanoVNASaver.version}"
+        self.baseTitle = f"Filter test bench"
         self.updateTitle()
         layout = QtWidgets.QBoxLayout(
             QtWidgets.QBoxLayout.Direction.LeftToRight
@@ -250,6 +253,9 @@ class NanoVNASaver(QWidget):
         ###############################################################
 
         left_column = QtWidgets.QVBoxLayout()
+        
+        
+
         right_column = QtWidgets.QVBoxLayout()
         right_column.addLayout(self.charts_layout)
         self.marker_frame.setHidden(app_config.gui.markers_hidden)
@@ -285,10 +291,12 @@ class NanoVNASaver(QWidget):
 
         left_column.addWidget(self.sweep_control)
 
+        #left_column.addWidget(self.sweep_automation)
+
         # ###############################################################
         #  Marker control
         ###############################################################
-
+        '''
         left_column.addWidget(self.marker_control)
 
         for c in self.subscribing_charts:
@@ -315,11 +323,11 @@ class NanoVNASaver(QWidget):
         self.delta_marker_layout = self.delta_marker.get_data_layout()
         self.delta_marker_layout.hide()
         self.marker_column.addWidget(self.delta_marker_layout)
-
+        '''
         ###############################################################
         #  Statistics/analysis
         ###############################################################
-
+        '''
         s11_control_box = QtWidgets.QGroupBox()
         s11_control_box.setTitle("S11")
         s11_control_layout = QtWidgets.QFormLayout()
@@ -355,11 +363,11 @@ class NanoVNASaver(QWidget):
             lambda: self.display_window("analysis")
         )
         self.marker_column.addWidget(btn_show_analysis)
-
+        '''
         ###############################################################
         # TDR
         ###############################################################
-
+        '''
         self.tdr_chart.tdrWindow = self.windows["tdr"]
         self.tdr_mainwindow_chart.tdrWindow = self.windows["tdr"]
         self.windows["tdr"].updated.connect(self.tdr_chart.update)
@@ -383,7 +391,7 @@ class NanoVNASaver(QWidget):
         tdr_control_layout.addRow(self.tdr_button)
 
         left_column.addWidget(tdr_control_box)
-
+        '''
         ###############################################################
         #  Spacer
         ###############################################################
@@ -400,7 +408,7 @@ class NanoVNASaver(QWidget):
         ###############################################################
         #  Reference control
         ###############################################################
-
+        '''
         reference_control_box = QtWidgets.QGroupBox()
         reference_control_box.setTitle("Reference sweep")
         reference_control_layout = QtWidgets.QFormLayout(reference_control_box)
@@ -417,7 +425,7 @@ class NanoVNASaver(QWidget):
         reference_control_layout.addRow(self.btnResetReference)
 
         left_column.addWidget(reference_control_box)
-
+        '''
         ###############################################################
         #  Serial control
         ###############################################################
@@ -427,6 +435,7 @@ class NanoVNASaver(QWidget):
         ###############################################################
         #  Calibration
         ###############################################################
+
 
         btnOpenCalibrationWindow = QtWidgets.QPushButton("Calibration ...")
         btnOpenCalibrationWindow.setMinimumHeight(20)
@@ -484,11 +493,11 @@ class NanoVNASaver(QWidget):
 
         for m in self.markers:
             m.resetLabels()
-        self.s11_min_rl_label.setText("")
-        self.s11_min_swr_label.setText("")
-        self.s21_min_gain_label.setText("")
-        self.s21_max_gain_label.setText("")
-        self.tdr_result_label.setText("")
+        #self.s11_min_rl_label.setText("")
+        #self.s11_min_swr_label.setText("")
+        #self.s21_min_gain_label.setText("")
+        #self.s21_max_gain_label.setText("")
+        #self.tdr_result_label.setText("")
 
         logger.debug("Starting worker thread")
         self.worker.start()
@@ -558,10 +567,11 @@ class NanoVNASaver(QWidget):
             c.setCombinedData(s11, s21)
 
         self.sweep_control.progress_bar.setValue(int(self.worker.percentage))
-        self.windows["tdr"].updateTDR()
-
+        #self.windows["tdr"].updateTDR()
+        '''
         if s11:
             min_vswr = min(s11, key=lambda data: data.vswr)
+            
             self.s11_min_swr_label.setText(
                 f"{format_vswr(min_vswr.vswr)} @"
                 f" {format_frequency(min_vswr.freq)}"
@@ -585,7 +595,7 @@ class NanoVNASaver(QWidget):
         else:
             self.s21_min_gain_label.setText("")
             self.s21_max_gain_label.setText("")
-
+        '''
         self.updateTitle()
         self.communicate.data_available.emit()
 

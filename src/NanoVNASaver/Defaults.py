@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GuiConfig:
     window_height: int = 950
-    window_width: int = 1433
+    window_width: int = 1700
     font_size: int = 8
     custom_colors: bool = False
     dark_mode: bool = False
@@ -204,6 +204,11 @@ class AppSettings(QSettings):
         return result
 
     def restore_config(self) -> AppConfig:
+        if getattr(self, "ignore_saved", False):
+            logger.info("Ignoring saved settings; using defaults")
+            self._app_config = AppConfig()
+            return self.get_app_config()
+
         logger.info("Loading settings from: %s", self.fileName())
 
         result = AppConfig()

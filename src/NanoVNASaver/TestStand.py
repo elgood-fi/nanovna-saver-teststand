@@ -19,6 +19,7 @@
 import contextlib
 import logging
 import threading
+import os
 from time import localtime, strftime
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -54,6 +55,10 @@ from .Charts.Chart import Chart
 from .Controls.MarkerControl import MarkerControl
 from .Controls.SerialControl import SerialControl
 from .Controls.SweepControl import SweepControl
+from .Controls.SweepEvaluate import SweepEvaluate
+from .Controls.CalibrationControl import CalibrationControl
+from .Controls.LotControl import LotControl
+from .TestSpec import TestPoint, TestSpec, parse_test_spec, evaluate_test_point, evaluate_testspec
 from .Defaults import APP_SETTINGS, AppSettings, get_app_config
 from .Formatting import format_frequency, format_gain, format_vswr
 from .Hardware.Hardware import Interface
@@ -90,147 +95,384 @@ class NanoVNASaver(QWidget):
     version = VERSION
     scale_factor = 1.0
 
-    def __init__(self) -> None:
+    def __init__(self, no_save_config: bool = False, no_load_config: bool = False) -> None:
         super().__init__()
+        self.no_save_config = no_save_config or os.environ.get('NANOVNASAVER_NO_SAVE') == '1'
+        self.no_load_config = no_load_config or os.environ.get('NANOVNASAVER_NO_LOAD') == '1'
+        self.communicate = Communicate()
+        self.s21att = 0.0
         self.setWindowIcon(get_window_icon())
-        self.version = VERSION
-        self.baseTitle = f"Filter test stand (NanoVNASaver version: {self.version})"
-        self.setWindowTitle(self.baseTitle)
+        # TODO APP_SETTINGS should be used instead app.setting\
+        self.settings: AppSettings = APP_SETTINGS
+        if getattr(self, "no_load_config", False):
+            self.settings.ignore_saved = True
+        app_config = self.settings.restore_config()
+        self.threadpool = QtCore.QThreadPool()
+        self.sweep = Sweep()
+        self.worker = SweepWorker(self)
 
-        # Minimal windows dict so display_window works
+        self._sequence_iter = None
+        self.sweep_sequence_results: list[Touchstone] = []
+
+        self.worker.signals.updated.connect(self.dataUpdated)
+        self.worker.signals.finished.connect(self.sweepFinished)
+        self.worker.signals.sweep_error.connect(self.showSweepError)
+
+        self.markers: list[Marker] = []
+        self.marker_ref = False
+
+        self.marker_column = QtWidgets.QVBoxLayout()
+        self.marker_frame = QtWidgets.QFrame()
+        self.marker_column.setContentsMargins(0, 0, 0, 0)
+        self.marker_frame.setLayout(self.marker_column)
+
+        self.interface = Interface("serial", "None")
+        self.vna: VNA = VNA(self.interface)
+
+        self.calibration: Calibration = Calibration()
+        self.calibration_control = CalibrationControl(self)
+        self.lot_control = LotControl(self)
+        self.sweep_control = SweepControl(self)
+        self.sweep_evaluate = SweepEvaluate(self)
+        self.marker_control = MarkerControl(self)
+        self.serial_control = SerialControl(self)
+        self.serial_control.connected.connect(
+            self.sweep_control.update_sweep_btn
+        )
+
+        self.bands: BandsModel = BandsModel()
+
+        self.dataLock = threading.Lock()
+        self.data: Touchstone = Touchstone()
+        self.ref_data: Touchstone = Touchstone()
+
+        self.sweepSource = ""
+        self.referenceSource = ""
+
+        logger.debug("Building user interface")
+
+        self.baseTitle = f"NanoVNA Saver {NanoVNASaver.version}"
+        self.updateTitle()
+        layout = QtWidgets.QBoxLayout(
+            QtWidgets.QBoxLayout.Direction.LeftToRight
+        )
+
+        scrollarea = QtWidgets.QScrollArea()
+        outer = QtWidgets.QVBoxLayout()
+        outer.addWidget(scrollarea)
+        self.setLayout(outer)
+        scrollarea.setWidgetResizable(True)
+        self.resize(app_config.gui.window_width, app_config.gui.window_height)
+        scrollarea.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+        )
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+        )
+        widget = QWidget()
+        widget.setLayout(layout)
+        scrollarea.setWidget(widget)
+
+        self.charts = {
+            "s11": {
+                "capacitance": CapacitanceChart("S11 Serial C"),
+                "group_delay": GroupDelayChart("S11 Group Delay"),
+                "inductance": InductanceChart("S11 Serial L"),
+                "log_mag": LogMagChart("S11 Return Loss"),
+                "magnitude": MagnitudeChart("|S11|"),
+                "magnitude_z": MagnitudeZChart("S11 |Z|"),
+                "permeability": PermeabilityChart(
+                    "S11 R/\N{GREEK SMALL LETTER OMEGA} &"
+                    " X/\N{GREEK SMALL LETTER OMEGA}"
+                ),
+                "phase": PhaseChart("S11 Phase"),
+                "q_factor": QualityFactorChart("S11 Quality Factor"),
+                "real_imag": RealImaginaryZChart("S11 R+jX"),
+                "real_imag_mu": RealImaginaryMuChart(
+                    "S11 \N{GREEK SMALL LETTER MU}"
+                ),
+                "smith": SmithChart("S11 Smith Chart"),
+                "s_parameter": SParameterChart("S11 Real/Imaginary"),
+                "vswr": VSWRChart("S11 VSWR"),
+                "sa_dbm": LogMagChart("Signal Analyser dBm"),
+            },
+            "s21": {
+                "group_delay": GroupDelayChart(
+                    "S21 Group Delay", reflective=False
+                ),
+                "log_mag": LogMagChart("S21 Gain"),
+                "magnitude": MagnitudeChart("|S21|"),
+                "magnitude_z_shunt": MagnitudeZShuntChart("S21 |Z| shunt"),
+                "magnitude_z_series": MagnitudeZSeriesChart("S21 |Z| series"),
+                "real_imag_shunt": RealImaginaryZShuntChart("S21 R+jX shunt"),
+                "real_imag_series": RealImaginaryZSeriesChart(
+                    "S21 R+jX series"
+                ),
+                "phase": PhaseChart("S21 Phase"),
+                "polar": PolarChart("S21 Polar Plot"),
+                "s_parameter": SParameterChart("S21 Real/Imaginary"),
+            },
+            "combined": {
+                "log_mag": CombinedLogMagChart("S11 & S21 LogMag"),
+            },
+        }
+        self.tdr_chart: TDRChart = TDRChart("TDR")
+        self.tdr_mainwindow_chart = TDRChart("TDR")
+
+        # List of all the S11 charts, for selecting
+        self.s11charts = list(self.charts["s11"].values())
+
+        # List of all the S21 charts, for selecting
+        self.s21charts = list(self.charts["s21"].values())
+
+        # List of all charts that use both S11 and S21
+        self.combinedCharts = list(self.charts["combined"].values())
+
+        # List of all charts that can be selected for display
+        self.selectable_charts = (
+            self.s11charts
+            + self.s21charts
+            + self.combinedCharts
+            + [
+                self.tdr_mainwindow_chart,
+            ]
+        )
+
+        # List of all charts that subscribe to updates (including duplicates!)
+        self.subscribing_charts = []
+        self.subscribing_charts.extend(self.selectable_charts)
+        self.subscribing_charts.append(self.tdr_chart)
+
+        for c in self.subscribing_charts:
+            c.popout_requested.connect(self.popoutChart)
+
+        self.charts_layout = QtWidgets.QGridLayout()
+
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Q"), self, self.close)
+
+        ###############################################################
+        #  Create main layout
+        ###############################################################
+
+        left_column = QtWidgets.QVBoxLayout()
+        right_column = QtWidgets.QVBoxLayout()
+        right_column.addLayout(self.charts_layout)
+        self.marker_frame.setHidden(app_config.gui.markers_hidden)
+        chart_widget = QWidget()
+        chart_widget.setLayout(right_column)
+        self.splitter = QtWidgets.QSplitter()
+        self.splitter.addWidget(self.marker_frame)
+        self.splitter.addWidget(chart_widget)
+        self.splitter.setSizes([1000, 0])
+        #self.splitter.restoreState(app_config.gui.splitter_sizes)
+
+        layout.addLayout(left_column)
+        layout.addWidget(self.splitter, 2)
+
+        ###############################################################
+        #  Windows
+        ###############################################################
+
         self.windows: dict[str, QtWidgets.QDialog] = {
             "about": AboutWindow(self),
+            "analysis": AnalysisWindow(self),
+            "calibration": CalibrationWindow(self),
+            "device_settings": DeviceSettingsWindow(self),
+            "file": FilesWindow(self),
+            "sweep_settings": SweepSettingsWindow(self),
+            "setup": DisplaySettingsWindow(self),
+            "tdr": TDRWindow(self),
         }
 
-        # Top-level layout for the test UI
-        main_layout = QtWidgets.QVBoxLayout()
-        self.setLayout(main_layout)
+        ###############################################################
+        #  Sweep control
+        ###############################################################
+        left_column.addWidget(self.calibration_control)
+        left_column.addWidget(self.lot_control)
+        left_column.addWidget(self.sweep_control)
+        self.sweep_control.setHidden(True)
+        # ###############################################################
+        #  Marker control
+        ###############################################################
 
-        # Create test panel: two columns
-        test_widget = QtWidgets.QWidget()
-        test_layout = QtWidgets.QHBoxLayout()
-        test_widget.setLayout(test_layout)
+        left_column.addWidget(self.sweep_evaluate)
+        #left_column.addWidget(self.marker_control)
 
-        # Left column
-        left_col = QtWidgets.QVBoxLayout()
-        btn_load_cal = QtWidgets.QPushButton("Load calibration file")
-        btn_load_cal.setMinimumHeight(48)
-        btn_load_cal.clicked.connect(lambda: self.display_window("about"))
+        for c in self.subscribing_charts:
+            c.setMarkers(self.markers)
+            c.setBands(self.bands)
 
-        cal_file_name = QtWidgets.QLabel("No calibration file loaded")
+        self.marker_data_layout = QtWidgets.QVBoxLayout()
+        self.marker_data_layout.setContentsMargins(0, 0, 0, 0)
 
-        btn_res_folder = QtWidgets.QPushButton("Open test results folder")
-        btn_res_folder.setMinimumHeight(28)
-        btn_res_folder.clicked.connect(lambda: self.display_window("about"))
+        for m in self.markers:
+            self.marker_data_layout.addWidget(m.get_data_layout())
 
-        btn_log = QtWidgets.QPushButton("Display test log")
-        btn_log.setMinimumHeight(28)
-        btn_log.clicked.connect(lambda: self.display_window("about"))
-        
-        
+        scroll2 = QtWidgets.QScrollArea()
+        scroll2.setWidgetResizable(True)
+        scroll2.setVisible(True)
 
-        lbl_start = QtWidgets.QLabel("Start frequency")
-        inp_start = QtWidgets.QLineEdit()
-        inp_start.setPlaceholderText("Start (Hz)")
+        widget2 = QWidget()
+        widget2.setLayout(self.marker_data_layout)
+        scroll2.setWidget(widget2)
+        #self.marker_column.addWidget(scroll2)
 
-        lbl_end = QtWidgets.QLabel("End frequency")
-        inp_end = QtWidgets.QLineEdit()
-        inp_end.setPlaceholderText("End (Hz)")
+        # init delta marker (but assume only one marker exists)
+        self.delta_marker = DeltaMarker("Delta Marker 2 - Marker 1")
+        self.delta_marker_layout = self.delta_marker.get_data_layout()
+        self.delta_marker_layout.hide()
+        #self.marker_column.addWidget(self.delta_marker_layout)
+        self.marker_column.addWidget(self.sweep_evaluate)
 
-        lbl_points = QtWidgets.QLabel("Number of measurement points")
-        inp_points = QtWidgets.QLineEdit()
-        inp_points.setPlaceholderText("5")
+        ###############################################################
+        #  Statistics/analysis
+        ###############################################################
 
-        left_col.addWidget(btn_load_cal)
-        left_col.addWidget(cal_file_name)
-        left_col.addSpacing(28)
-        left_col.addWidget(lbl_start)
-        left_col.addWidget(inp_start)
-        left_col.addWidget(lbl_end)
-        left_col.addWidget(inp_end)
-        left_col.addWidget(lbl_points)
-        left_col.addWidget(inp_points)
-        left_col.addSpacing(28)
-        left_col.addWidget(btn_res_folder)
-        left_col.addWidget(btn_log)
-        left_col.addStretch(1)
+        s11_control_box = QtWidgets.QGroupBox()
+        s11_control_box.setTitle("S11")
+        s11_control_layout = QtWidgets.QFormLayout()
+        s11_control_layout.setVerticalSpacing(0)
+        s11_control_box.setLayout(s11_control_layout)
 
-        left_widget = QtWidgets.QWidget()
-        left_widget.setLayout(left_col)
-        left_widget.setMinimumWidth(200)
+        self.s11_min_swr_label = QtWidgets.QLabel()
+        s11_control_layout.addRow("Min VSWR:", self.s11_min_swr_label)
+        self.s11_min_rl_label = QtWidgets.QLabel()
+        s11_control_layout.addRow("Return loss:", self.s11_min_rl_label)
 
-        # Right column
-        right_col = QtWidgets.QVBoxLayout()
-        
-        sample_id = QtWidgets.QLabel("Sample #0000001")
-        sample_id.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-        sample_id.setStyleSheet("""
-        QLabel {
-        color: black;
-        font-size: 18px;
-        padding: 10px;
-        }
-        """)
+        #self.marker_column.addWidget(s11_control_box)
 
-        
+        s21_control_box = QtWidgets.QGroupBox()
+        s21_control_box.setTitle("S21")
+        s21_control_layout = QtWidgets.QFormLayout()
+        s21_control_layout.setVerticalSpacing(0)
+        s21_control_box.setLayout(s21_control_layout)
 
-        status = QtWidgets.QLabel("PASS")
-        status.setStyleSheet("""
-        QLabel {
-        color: green;
-        font-size: 56px;
-        padding: 10px;
-        }
-        """)
-        status.setMinimumHeight(80)
-        #status.setMinimumWidth(260)
-        status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        btn_test = QtWidgets.QPushButton("Test")
-        btn_test.setMinimumHeight(80)
-        btn_test.clicked.connect(lambda: self.display_window("about"))
+        self.s21_min_gain_label = QtWidgets.QLabel()
+        s21_control_layout.addRow("Min gain:", self.s21_min_gain_label)
 
-        test_sequence = QtWidgets.QListWidget()
-        #placeholder test log
-        test_sequence.addItem("Reading calibration file... OK")
-        test_sequence.addItem("Measuring point #1 ... OK")
-        test_sequence.addItem("Measuring point #2 ... OK")
-        test_sequence.addItem("Measuring point #3 ... OK")
-        test_sequence.addItem("Measuring point #4 ... OK")
-        test_sequence.addItem("Measuring point #5 ... OK")
-        test_sequence.addItem("Writing result file ... OK")
-        test_sequence.addItem("Printing label... OK")
-        success = QtWidgets.QListWidgetItem("Success! All tests passed.")
-        success.setForeground(QtGui.QBrush(QtGui.QColor("Green")))
-        test_sequence.addItem(success)
-        test_sequence.setMinimumHeight(200)
- 
+        self.s21_max_gain_label = QtWidgets.QLabel()
+        s21_control_layout.addRow("Max gain:", self.s21_max_gain_label)
 
-        right_col.addWidget(sample_id)
-        right_col.addWidget(status)
-        right_col.addWidget(test_sequence)
-        right_col.addWidget(btn_test)
-        right_col.addStretch(1)
+        #self.marker_column.addWidget(s21_control_box)
 
-        right_widget = QtWidgets.QWidget()
-        right_widget.setLayout(right_col)
+        # self.marker_column.addStretch(1)
 
-        test_layout.addWidget(left_widget)
-        test_layout.addWidget(right_widget)
-        test_layout.setStretch(0, 0)
-        test_layout.setStretch(1, 1)
-    
+        btn_show_analysis = QtWidgets.QPushButton("Analysis ...")
+        btn_show_analysis.setMinimumHeight(20)
+        btn_show_analysis.clicked.connect(
+            lambda: self.display_window("analysis")
+        )
+        #self.marker_column.addWidget(btn_show_analysis)
 
-        main_layout.addWidget(test_widget)
+        ###############################################################
+        # TDR
+        ###############################################################
 
-        '''
-        # Full-width placeholder row under the two columns
-        placeholder = QtWidgets.QLabel("placeholder")
-        placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        
-        # Give it a bit of vertical presence
-        placeholder.setMinimumHeight(30)
-        main_layout.addWidget(placeholder)
-        '''
+        self.tdr_chart.tdrWindow = self.windows["tdr"]
+        self.tdr_mainwindow_chart.tdrWindow = self.windows["tdr"]
+        self.windows["tdr"].updated.connect(self.tdr_chart.update)
+        self.windows["tdr"].updated.connect(self.tdr_mainwindow_chart.update)
+
+        tdr_control_box = QtWidgets.QGroupBox()
+        tdr_control_box.setTitle("TDR")
+        tdr_control_layout = QtWidgets.QFormLayout()
+        tdr_control_box.setLayout(tdr_control_layout)
+
+        self.tdr_result_label = QtWidgets.QLabel()
+        self.tdr_result_label.setMinimumHeight(20)
+        tdr_control_layout.addRow(
+            "Estimated cable length:", self.tdr_result_label
+        )
+
+        self.tdr_button = QtWidgets.QPushButton("Time Domain Reflectometry ...")
+        self.tdr_button.setMinimumHeight(20)
+        self.tdr_button.clicked.connect(lambda: self.display_window("tdr"))
+
+        tdr_control_layout.addRow(self.tdr_button)
+
+        #left_column.addWidget(tdr_control_box)
+
+        ###############################################################
+        #  Spacer
+        ###############################################################
+
+        left_column.addSpacerItem(
+            QtWidgets.QSpacerItem(
+                1,
+                1,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+                QtWidgets.QSizePolicy.Policy.Expanding,
+            )
+        )
+
+        ###############################################################
+        #  Reference control
+        ###############################################################
+
+        reference_control_box = QtWidgets.QGroupBox()
+        reference_control_box.setTitle("Reference sweep")
+        reference_control_layout = QtWidgets.QFormLayout(reference_control_box)
+
+        btn_set_reference = QtWidgets.QPushButton("Set current as reference")
+        btn_set_reference.setMinimumHeight(20)
+        btn_set_reference.clicked.connect(self.setReference)
+        self.btnResetReference = QtWidgets.QPushButton("Reset reference")
+        self.btnResetReference.setMinimumHeight(20)
+        self.btnResetReference.clicked.connect(self.resetReference)
+        self.btnResetReference.setDisabled(True)
+
+        reference_control_layout.addRow(btn_set_reference)
+        reference_control_layout.addRow(self.btnResetReference)
+
+        #left_column.addWidget(reference_control_box)
+
+        ###############################################################
+        #  Serial control
+        ###############################################################
+
+        left_column.addWidget(self.serial_control)
+
+        ###############################################################
+        #  Calibration
+        ###############################################################
+
+        btnOpenCalibrationWindow = QtWidgets.QPushButton("Calibration ...")
+        btnOpenCalibrationWindow.setMinimumHeight(20)
+        self.calibrationWindow = CalibrationWindow(self)
+        btnOpenCalibrationWindow.clicked.connect(
+            lambda: self.display_window("calibration")
+        )
+
+        ###############################################################
+        #  Display setup
+        ###############################################################
+
+        btn_display_setup = QtWidgets.QPushButton("Display setup ...")
+        btn_display_setup.setMinimumHeight(20)
+        btn_display_setup.clicked.connect(lambda: self.display_window("setup"))
+
+        btn_about = QtWidgets.QPushButton("About ...")
+        btn_about.setMinimumHeight(20)
+
+        btn_about.clicked.connect(lambda: self.display_window("about"))
+
+        btn_open_file_window = QtWidgets.QPushButton("Files ...")
+        btn_open_file_window.setMinimumHeight(20)
+
+        btn_open_file_window.clicked.connect(
+            lambda: self.display_window("file")
+        )
+
+        button_grid = QtWidgets.QGridLayout()
+        button_grid.addWidget(btn_open_file_window, 0, 0)
+        button_grid.addWidget(btnOpenCalibrationWindow, 0, 1)
+        button_grid.addWidget(btn_display_setup, 1, 0)
+        button_grid.addWidget(btn_about, 1, 1)
+        left_column.addLayout(button_grid)
+
+        logger.debug("Finished building interface")
 
     def auto_connect(
         self,
@@ -250,13 +492,13 @@ class NanoVNASaver(QWidget):
             return
         self._sweep_control(start=True)
 
-        for m in self.markers:
-            m.resetLabels()
-        self.s11_min_rl_label.setText("")
-        self.s11_min_swr_label.setText("")
-        self.s21_min_gain_label.setText("")
-        self.s21_max_gain_label.setText("")
-        self.tdr_result_label.setText("")
+        #for m in self.markers:
+        #    m.resetLabels()
+        #self.s11_min_rl_label.setText("")
+        #self.s11_min_swr_label.setText("")
+        #self.s21_min_gain_label.setText("")
+        #self.s21_max_gain_label.setText("")
+        #self.tdr_result_label.setText("")
 
         logger.debug("Starting worker thread")
         self.worker.start()
@@ -311,10 +553,11 @@ class NanoVNASaver(QWidget):
         with self.dataLock:
             s11 = self.data.s11[:]
             s21 = self.data.s21[:]
-
-        for m in self.markers:
-            m.resetLabels()
-            m.updateLabels(s11, s21)
+        self.sweep_evaluate.s11_chart.setData(s11)
+        self.sweep_evaluate.s21_chart.setData(s21)
+        #for m in self.markers:
+        #    m.resetLabels()
+        #    m.updateLabels(s11, s21)
 
         for c in self.s11charts:
             c.setData(s11)
@@ -325,9 +568,9 @@ class NanoVNASaver(QWidget):
         for c in self.combinedCharts:
             c.setCombinedData(s11, s21)
 
-        self.sweep_control.progress_bar.setValue(int(self.worker.percentage))
-        self.windows["tdr"].updateTDR()
-
+        self.sweep_evaluate.progress_bar.setValue(int(self.worker.percentage))
+        #self.windows["tdr"].updateTDR()
+        '''
         if s11:
             min_vswr = min(s11, key=lambda data: data.vswr)
             self.s11_min_swr_label.setText(
@@ -353,7 +596,7 @@ class NanoVNASaver(QWidget):
         else:
             self.s21_min_gain_label.setText("")
             self.s21_max_gain_label.setText("")
-
+        '''
         self.updateTitle()
         self.communicate.data_available.emit()
 
@@ -362,6 +605,13 @@ class NanoVNASaver(QWidget):
 
         for marker in self.markers:
             marker.frequencyInput.textEdited.emit(marker.frequencyInput.text())
+
+        # If a test spec is loaded, evaluate the sweep against it
+        try:
+            if hasattr(self, "sweep_evaluate") and getattr(self.sweep_evaluate, "spec", None):
+                self.sweep_evaluate.evaluate()
+        except Exception:
+            logger.exception("Error during sweep evaluation")
 
     def setReference(self, s11=None, s21=None, source=None):
         if not s11:
@@ -410,7 +660,7 @@ class NanoVNASaver(QWidget):
         self.btnResetReference.setDisabled(True)
 
     def sizeHint(self) -> QtCore.QSize:
-        return QtCore.QSize(1100, 400)
+        return QtCore.QSize(1100, 950)
 
     def display_window(self, name):
         self.windows[name].show()
@@ -463,7 +713,8 @@ class NanoVNASaver(QWidget):
 
         self.sweep_control.store_settings()
 
-        self.settings.store_config()
+        if not getattr(self, "no_save_config", False):
+            self.settings.store_config()
 
         # Dosconnect connected devices and release serial port
         self.serial_control.disconnect_device()
