@@ -41,6 +41,20 @@ class TestPoint:
 
 
 @dataclass
+class TestResult:
+    """Result of evaluating a single TestPoint.
+
+    Stores the original TestPoint and the computed min/max/gating info.
+    """
+    tp: TestPoint
+    passed: bool
+    min: Optional[float]
+    max: Optional[float]
+    failing: List[int]
+    samples: int
+
+
+@dataclass
 class TestSpec:
     sweep: dict
     tests: List[TestPoint]

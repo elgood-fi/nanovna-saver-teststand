@@ -68,7 +68,8 @@ class SweepEvaluate(Control):
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
 
         self.spec = None
-        
+        # Holds the latest evaluation results as a list of TestResult dataclass instances
+        self.latest_result = None
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setMaximum(100)
@@ -97,6 +98,7 @@ class SweepEvaluate(Control):
             "  margin: 0px;"
             "}"
         )
+        
 
         # Overall status panel shown above the progress bar
         self.status_label = QtWidgets.QLabel("Ready")
@@ -107,6 +109,7 @@ class SweepEvaluate(Control):
         self.status_label.setFont(font)
         self._testing = False
         self._last_result_state = None
+        self.current_serial = None
         # yellow = ready/testing default
         self._set_status_style("Ready", "#FFD54F", "black")
 
@@ -161,9 +164,12 @@ class SweepEvaluate(Control):
         #btn_save.clicked.connect(self.save_results)
         left_column = QtWidgets.QVBoxLayout() 
         btn_test = QtWidgets.QPushButton("Test")
-        btn_test.setMinimumHeight(80)
+        btn_test.setMinimumHeight(90)
+        btn_test.setStyleSheet(
+            "font-size: 20px; font-weight: bold;"
+        )
         #btn_test.setFixedWidth(350)
-        btn_test.clicked.connect(self.app.sweep_start)
+        btn_test.clicked.connect(self._on_test_button_clicked)
         left_column.addWidget(btn_test)
         #btn_test.clicked.connect(self.on_run_sequence_btn)
         middle_column = QtWidgets.QFormLayout()
@@ -176,6 +182,8 @@ class SweepEvaluate(Control):
         )
         # Add the label as a full-width row
         status_display = QtWidgets.QFormLayout() 
+        status_spacer = QtWidgets.QSpacerItem(200, 0, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
+        status_display.addItem(status_spacer)
         
         '''
         status_title = QtWidgets.QLabel("Test configuration status")
@@ -245,11 +253,12 @@ class SweepEvaluate(Control):
         right_column.addRow(right_bottom_row)
         
         test_layout = QtWidgets.QHBoxLayout()
-        test_layout.addLayout(left_column)
-        test_layout.addLayout(status_display)
+        
         test_layout.addLayout(middle_column)
         test_layout.addLayout(right_column)
-        
+        test_layout.addLayout(status_display)
+        test_layout.addLayout(left_column)
+
         #test_layout.addWidget(self.progress_bar)
 
         #opts_layout.addWidget(self.auto_eval)
@@ -336,6 +345,27 @@ class SweepEvaluate(Control):
         from ..TestSpec import evaluate_testspec
 
         results = evaluate_testspec(s11, s21, self.spec)
+        # create TestResult instances for the latest run (keep compatibility with dict results)
+        try:
+            from ..TestSpec import TestResult
+
+            test_results = []
+            for tp, res in zip(self.spec.tests, results):
+                test_results.append(
+                    TestResult(
+                        tp=tp,
+                        passed=bool(res.get("pass", False)),
+                        min=res.get("min"),
+                        max=res.get("max"),
+                        failing=res.get("failing", []),
+                        samples=res.get("samples", 0),
+                    )
+                )
+            self.latest_result = test_results
+        except Exception:
+            # If dataclass import or construction fails for any reason, clear latest_result
+            self.latest_result = None
+
         # update table rows
         overall_pass = True
         for row, res in enumerate(results):
@@ -406,6 +436,21 @@ class SweepEvaluate(Control):
         import json
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"spec": self.spec.sweep, "results": results}, f, indent=2)
+
+    def _on_test_button_clicked(self):
+        text, ok = QtWidgets.QInputDialog.getText(self, "Serial number", "Enter serial number:")
+        if not ok:
+            return
+        serial = str(text).strip()
+        if not serial:
+            QtWidgets.QMessageBox.warning(self, "Invalid serial", "No serial number entered")
+            return
+        self.current_serial = serial
+        logger.debug("Serial entered: %s", self.current_serial)
+        try:
+            self.app.sweep_start()
+        except Exception:
+            logger.exception("Failed to start sweep")
 
     def _set_status_style(self, text: str, bg_color: str, fg_color: str) -> None:
         # Simple stylesheet based status update
