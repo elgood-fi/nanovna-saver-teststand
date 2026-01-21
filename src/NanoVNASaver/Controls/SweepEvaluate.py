@@ -17,6 +17,7 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 from PySide6 import QtCore, QtWidgets, QtGui
@@ -59,8 +60,13 @@ class FrequencyInputWidget(QtWidgets.QLineEdit):
 class SweepEvaluate(Control):
     """Widget to load a JSON test spec and evaluate sweeps against it."""
 
+    # Signal emitted with the latest results (list of TestResult)
+    results_ready = QtCore.Signal(object)
+
     def __init__(self, app: "vna_app"):
         super().__init__(app, "Test configuration")
+
+        
 
         # Override base Control width so widget expands to parent width
         # (Control sets a small maximum width by default)
@@ -70,6 +76,8 @@ class SweepEvaluate(Control):
         self.spec = None
         # Holds the latest evaluation results as a list of TestResult dataclass instances
         self.latest_result = None
+
+        self.test_data = None
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setMaximum(100)
@@ -135,6 +143,35 @@ class SweepEvaluate(Control):
             # If worker or signals not available yet, ignore
             pass
 
+        # Connect to other controls (if present) so button state can be kept up-to-date
+        try:
+            # Update when PCB lot field changes
+            if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "pcb_lot_field"):
+                self.app.lot_control.pcb_lot_field.textChanged.connect(self.update_test_button_state)
+            # Update when lot selection changes
+            if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "lot_changed"):
+                self.app.lot_control.lot_changed.connect(self.update_test_button_state)
+        except Exception:
+            pass
+        try:
+            # Update when calibration is loaded
+            if hasattr(self.app, "calibration_control"):
+                self.app.calibration_control.calibration_loaded.connect(self.update_test_button_state)
+        except Exception:
+            pass
+        try:
+            # If serial control already exists, update when connection state changes
+            if hasattr(self.app, "serial_control"):
+                self.app.serial_control.connected.connect(self.update_test_button_state)
+        except Exception:
+            pass
+
+        # Initial state update
+        try:
+            self.update_test_button_state()
+        except Exception:
+            pass
+
         # Top row: spec path + load button
         #path_layout = QtWidgets.QHBoxLayout()
         #left_column = QtWidgets.QVBoxLayout()
@@ -163,14 +200,16 @@ class SweepEvaluate(Control):
         #btn_save.setFixedHeight(40)
         #btn_save.clicked.connect(self.save_results)
         left_column = QtWidgets.QVBoxLayout() 
-        btn_test = QtWidgets.QPushButton("Test")
-        btn_test.setMinimumHeight(90)
-        btn_test.setStyleSheet(
+        # Keep a reference to the Test button so we can enable/disable it from state changes
+        self.btn_test = QtWidgets.QPushButton("Test")
+        self.btn_test.setMinimumHeight(90)
+        self.btn_test.setStyleSheet(
             "font-size: 20px; font-weight: bold;"
         )
         #btn_test.setFixedWidth(350)
-        btn_test.clicked.connect(self._on_test_button_clicked)
-        left_column.addWidget(btn_test)
+        self.btn_test.clicked.connect(self._on_test_button_clicked)
+        self.btn_test.setEnabled(False)
+        left_column.addWidget(self.btn_test)
         #btn_test.clicked.connect(self.on_run_sequence_btn)
         middle_column = QtWidgets.QFormLayout()
         self.golden_title = QtWidgets.QLabel("Golden sample")
@@ -309,6 +348,11 @@ class SweepEvaluate(Control):
         self.spec = spec
         self.spec_label.setText(str(Path(path).name))
         self.populate_table()
+        # Update Test button state whenever a spec is loaded
+        try:
+            self.update_test_button_state()
+        except Exception:
+            pass
 
     def populate_table(self):
         self.table.setRowCount(0)
@@ -343,11 +387,11 @@ class SweepEvaluate(Control):
         self.s21_chart.setData(s21)
         
         from ..TestSpec import evaluate_testspec
+        from ..TestSpec import TestResult, TestData
 
         results = evaluate_testspec(s11, s21, self.spec)
         # create TestResult instances for the latest run (keep compatibility with dict results)
         try:
-            from ..TestSpec import TestResult
 
             test_results = []
             for tp, res in zip(self.spec.tests, results):
@@ -362,10 +406,14 @@ class SweepEvaluate(Control):
                     )
                 )
             self.latest_result = test_results
-        except Exception:
+            
+
+        except Exception as e:
             # If dataclass import or construction fails for any reason, clear latest_result
+            print(f"error: {e}")
             self.latest_result = None
 
+        
         # update table rows
         overall_pass = True
         for row, res in enumerate(results):
@@ -382,6 +430,14 @@ class SweepEvaluate(Control):
             if not res["pass"]:
                 overall_pass = False
 
+        self.test_data = TestData(
+            serial=self.current_serial or "NOSERIAL",
+            id=str(uuid.uuid4()),
+            meta="test_run",
+            passed= overall_pass,
+            pcb_lot="",
+            results=self.latest_result
+        )   
         # Update overall status panel based on results
         if overall_pass:
             self._last_result_state = "PASS"
@@ -389,6 +445,13 @@ class SweepEvaluate(Control):
         else:
             self._last_result_state = "FAIL"
             self._set_status_style("FAIL", "#F44336", "white")
+
+        print(self.latest_result)
+        try:
+            print("Emitting results_ready from evaluate")
+            self.results_ready.emit(self.test_data)
+        except Exception:
+            logger.exception("Failed to emit results_ready")
 
     def apply_sweep_settings(self):
         if not self.spec:
@@ -452,6 +515,76 @@ class SweepEvaluate(Control):
         except Exception:
             logger.exception("Failed to start sweep")
 
+    def update_test_button_state(self, *args) -> None:
+        """Enable the Test button only when all preconditions are met:
+        - PCB lot field is non-empty
+        - a calibration file is loaded (1-port valid)
+        - a test specification is loaded
+        - the NanoVNA device is connected
+        """
+        try:
+            pcb_ok = False
+            spec_ok = False
+            cal_ok = False
+            vna_ok = False
+            lot_ok = False
+
+            # PCB lot field
+            try:
+                pcb_text = ""
+                if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "pcb_lot_field"):
+                    pcb_text = str(self.app.lot_control.pcb_lot_field.text()).strip()
+                pcb_ok = bool(pcb_text)
+            except Exception:
+                pcb_ok = False
+
+            # Spec loaded
+            spec_ok = bool(self.spec)
+
+            # Calibration loaded
+            try:
+                cal_ok = bool(self.app.calibration and self.app.calibration.isValid1Port())
+            except Exception:
+                cal_ok = False
+
+            # VNA connected
+            try:
+                vna_ok = bool(self.app.vna and self.app.vna.connected())
+            except Exception:
+                vna_ok = False
+
+            # Lot selected
+            try:
+                lot_ok = bool(hasattr(self.app, "lot_control") and getattr(self.app.lot_control, "current_lot_name", None))
+            except Exception:
+                lot_ok = False
+
+            enabled = pcb_ok and spec_ok and cal_ok and vna_ok and lot_ok
+            # Set tooltip for user guidance
+            if not enabled:
+                reasons = []
+                if not pcb_ok:
+                    reasons.append("PCB lot not set")
+                if not lot_ok:
+                    reasons.append("No lot selected")
+                if not spec_ok:
+                    reasons.append("No test program loaded")
+                if not cal_ok:
+                    reasons.append("Calibration not loaded")
+                if not vna_ok:
+                    reasons.append("Device not connected")
+                tooltip = "; ".join(reasons)
+            else:
+                tooltip = "Ready to test"
+
+            try:
+                self.btn_test.setEnabled(enabled)
+                self.btn_test.setToolTip(tooltip)
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Failed to update Test button state")
+
     def _set_status_style(self, text: str, bg_color: str, fg_color: str) -> None:
         # Simple stylesheet based status update
         try:
@@ -479,4 +612,8 @@ class SweepEvaluate(Control):
         self._testing = False
         if self._last_result_state is None:
             self._set_status_style("Ready", "#FFD54F", "black")
+        else:
+            pass
+            #self.results_ready.emit(self.latest_result)
+            #print("Emitted results_ready from worker finished")
 

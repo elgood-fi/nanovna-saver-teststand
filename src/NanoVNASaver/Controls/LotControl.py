@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Optional
 import json
 from datetime import datetime
 from ..Touchstone import Touchstone
-
+from ..TestSpec import TestResult, TestData
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Signal, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -315,6 +315,171 @@ class LotControl(Control):
         # store the highlighted row, but do not finalize selection until user presses Select
         self.highlighted_row = item.row()
         self.btn_select.setEnabled(True)
+        
+    def save_results_for_latest(self, test_data):
+        print("LotControl: save_results_for_latest called")
+        """Save TestData into the currently selected lot directory.
+
+        For each TestResult in the TestData this saves:
+        - one S1P covering the test frequency range (if S11 samples available)
+        - one S2P covering the test frequency range (if S11 and S21 samples available)
+        and also saves `results_<serial>_<id>.json` containing the TestData contents.
+
+        Files are written to: current_lot_path/<serial>/<id>/
+        """
+        # Accept legacy input (list of TestResult) for backward compatibility
+        if not test_data:
+            print("LotControl: No test data to save")
+            return
+        if not self.current_lot_path:
+            QtWidgets.QMessageBox.information(self, "No lot selected", "Please select a lot first.")
+            return
+        out_dir = Path(self.current_lot_path)
+
+        # Try to accept either a TestData object or a legacy list of TestResult
+        try:
+            results = getattr(test_data, "results", None)
+            serial = getattr(test_data, "serial", None)
+            print(f"LotControl: Sarjanumero {serial}")
+            tid = getattr(test_data, "id", None)
+            passed = getattr(test_data, "passed", None)
+            # Prefer the current PCB Lot field value if available, otherwise use test_data.pcb_lot if present
+            pcb_lot = None
+            try:
+                if hasattr(self, "pcb_lot_field") and self.pcb_lot_field.text().strip():
+                    pcb_lot = self.pcb_lot_field.text().strip()
+                else:
+                    pcb_lot = getattr(test_data, "pcb_lot", None)
+            except Exception:
+                pcb_lot = getattr(test_data, "pcb_lot", None)
+            meta = getattr(test_data, "meta", None)
+            if results is None and isinstance(test_data, list):
+                # Legacy list: wrap into a simple TestData-like struct
+                results = test_data
+                serial = getattr(self, "current_lot_name", None) or "NOSERIAL"
+                from uuid import uuid4
+                tid = str(uuid4())
+                passed = "UNKNOWN",
+                pcb_lot = "UNKNOWN"
+                meta = "legacy"
+                
+        except Exception:
+            logger.exception("Invalid test_data passed to save_results_for_latest")
+            return
+
+        ts_full = getattr(self.app, "data", None)
+        if ts_full is None:
+            logger.warning("No sweep data available to save for TestData %s", tid)
+            return
+
+        saved_any = False
+        # create sample dir for this TestData
+        serial_dir = str(serial) if serial else str(tid)
+        sample_dir = out_dir / serial_dir / str(tid)
+        print(f"LotControl: Saving TestData to {sample_dir}")
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save the TestData contents as JSON: results_<serial>_<id>.json
+        results_meta_file = sample_dir / f"results_{serial}_{tid}.json"
+        try:
+            # Build a JSON-friendly representation
+            jt = {
+                "serial": serial,
+                "id": tid,
+                "timestamp": datetime.now().isoformat(),
+                "meta": meta,
+                "passed": passed,   
+                "pcb_lot": pcb_lot,
+                "results": [],
+            }
+            for r in results:
+                tp = getattr(r, "tp", None)
+                tp_dict = None
+                if tp is not None:
+                    tp_dict = {
+                        "name": getattr(tp, "name", None),
+                        "parameter": getattr(tp, "parameter", None),
+                        "frequency": getattr(tp, "frequency", None),
+                        "span": getattr(tp, "span", None),
+                        "limit_db": getattr(tp, "limit_db", None),
+                        "direction": getattr(tp, "direction", None),
+                    }
+                jt["results"].append({
+                    "tp": tp_dict,
+                    "passed": getattr(r, "passed", None),
+                    "min": getattr(r, "min", None),
+                    "max": getattr(r, "max", None),
+                    "failing": getattr(r, "failing", None),
+                    "samples": getattr(r, "samples", None),
+                })
+            with results_meta_file.open("w", encoding="utf-8") as f:
+                json.dump(jt, f, indent=2)
+            saved_any = True
+        except Exception:
+            logger.exception("Failed saving TestData JSON %s", results_meta_file)
+
+        # Save full Touchstone data: ONE S1P and ONE S2P per TestData (no per-test aggregation)
+        from ..Windows.Files import FilesWindow
+
+        try:
+            saved_s1 = FilesWindow.exportFileToDir(self, str(sample_dir), filename=f"{serial}_{tid}_s1p.s1p", nr_params=1)
+            logger.info("Saved full S1P for TestData %s to %s", tid, saved_s1)
+            saved_s2 = FilesWindow.exportFileToDir(self, str(sample_dir), filename=f"{serial}_{tid}_s2p.s2p", nr_params=4)
+            logger.info("Saved full S2P for TestData %s to %s", tid, saved_s2)
+
+        except Exception:
+            logger.exception("Failed saving full S-parameter files for TestData %s", tid)
+        '''
+        try:
+            from ..Touchstone import Touchstone
+            ts_sub = Touchstone()
+            ts_sub.opts = ts_full.opts
+            ts_sub.s11 = list(ts_full.s11) if getattr(ts_full, "s11", None) else []
+            ts_sub.s21 = list(ts_full.s21) if getattr(ts_full, "s21", None) else []
+
+            base = f"{serial}_{tid}".replace(" ", "_")
+
+            if ts_sub.s11:
+                try:
+                    saved_s1 = save_s1p(ts_sub, sample_dir, base_name=f"{base}_s1p")
+                    logger.info("Saved full S1P for TestData %s to %s", tid, saved_s1)
+                    saved_any = True
+                except Exception:
+                    logger.exception("Failed saving full S1P for TestData %s", tid)
+
+            # Save S2P only if both S11 and S21 exist and lengths match
+            if ts_sub.s11 and ts_sub.s21:
+                if len(ts_sub.s11) == len(ts_sub.s21):
+                    try:
+                        saved_s2 = save_s2p(ts_sub, sample_dir, base_name=f"{base}_s2p")
+                        logger.info("Saved full S2P for TestData %s to %s", tid, saved_s2)
+                        saved_any = True
+                    except Exception:
+                        logger.exception("Failed saving full S2P for TestData %s", tid)
+                else:
+                    logger.warning("S11 and S21 lengths differ; skipping S2P for TestData %s", tid)
+        except Exception:
+            logger.exception("Failed creating Touchstone for TestData %s", tid)
+        '''
+        # update sample count and lot.json (stored at lot root)
+        lot_name = self.current_lot_name
+        if lot_name and saved_any:
+            self.lot_samples[lot_name] = self.lot_samples.get(lot_name, 0) + 1
+            info_file = out_dir / f"{lot_name}.json"
+            try:
+                info = {
+                    "lot_name": lot_name,
+                    "samples": int(self.lot_samples[lot_name]),
+                    "creation_date": datetime.now().isoformat(),
+                }
+                with info_file.open("w", encoding="utf-8") as f:
+                    json.dump(info, f, indent=2)
+            except Exception:
+                logger.exception("Failed updating lot info %s", info_file)
+
+        # refresh UI sample count
+        if saved_any and self.current_lot_name:
+            self.samples_label.setText(str(self.lot_samples.get(self.current_lot_name, 0)))
 
 
 # Helper functions for saving touchstone files directly in this module
@@ -381,3 +546,22 @@ def save_s2p(ts: Touchstone, directory: Path, base_name: Optional[str] = "touchs
     ts.save(4)
     logger.info("Saved S2P to %s", filename)
     return filename
+
+
+def save_result(result: TestResult, directory: Path):
+    """Save a TestResult metadata JSON file into ``directory`` and return the path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "id": result.id,
+        "serial": result.serial,
+        "passed": result.passed,
+        "min": result.min,
+        "max": result.max,
+        "failing": result.failing,
+        "samples": result.samples,
+        "test_name": getattr(result.tp, "name", None),
+    }
+    file = directory / f"{result.serial}_{result.id}.json"
+    with file.open("w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    return file

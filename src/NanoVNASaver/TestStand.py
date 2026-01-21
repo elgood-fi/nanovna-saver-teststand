@@ -133,11 +133,21 @@ class NanoVNASaver(QWidget):
         self.lot_control = LotControl(self)
         self.sweep_control = SweepControl(self)
         self.sweep_evaluate = SweepEvaluate(self)
+        # wire evaluation result signal to lot auto-save handler
+        try:
+            self.sweep_evaluate.results_ready.connect(self.lot_control.save_results_for_latest)
+        except Exception:
+            logger.exception("Failed connecting results_ready to LotControl")
         self.marker_control = MarkerControl(self)
         self.serial_control = SerialControl(self)
         self.serial_control.connected.connect(
             self.sweep_control.update_sweep_btn
         )
+        # Keep the SweepEvaluate Test button updated when the device connection changes
+        try:
+            self.serial_control.connected.connect(self.sweep_evaluate.update_test_button_state)
+        except Exception:
+            pass
 
         self.bands: BandsModel = BandsModel()
 
@@ -609,6 +619,7 @@ class NanoVNASaver(QWidget):
         try:
             if hasattr(self, "sweep_evaluate") and getattr(self.sweep_evaluate, "spec", None):
                 self.sweep_evaluate.evaluate()
+                
         except Exception:
             logger.exception("Error during sweep evaluation")
 

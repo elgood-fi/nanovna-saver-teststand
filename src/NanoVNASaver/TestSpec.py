@@ -39,7 +39,6 @@ class TestPoint:
     limit_db: float
     direction: str
 
-
 @dataclass
 class TestResult:
     """Result of evaluating a single TestPoint.
@@ -53,6 +52,14 @@ class TestResult:
     failing: List[int]
     samples: int
 
+@dataclass
+class TestData:
+    serial: str
+    id: str
+    meta: str
+    passed: bool
+    pcb_lot: str
+    results: List[TestResult]
 
 @dataclass
 class TestSpec:

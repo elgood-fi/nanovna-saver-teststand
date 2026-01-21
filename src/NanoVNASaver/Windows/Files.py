@@ -18,6 +18,7 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import logging
 from typing import TYPE_CHECKING
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -120,6 +121,76 @@ class FilesWindow(QtWidgets.QWidget):
         except IOError as e:
             logger.exception("Error during file export: %s", e)
             return
+
+    def exportFileToDir(self, dir: str,filename: str, nr_params: int = 1):
+        """Save an S-parameter file into the given directory without prompting.
+
+        The function will create a unique filename inside the provided directory
+        and save either a 1-port or 2-port Touchstone file depending on `nr_params`.
+        """
+        if len(self.app.data.s11) == 0:
+            QtWidgets.QMessageBox.warning(
+                self, "No data to save", "There is no data to save."
+            )
+            return
+        if nr_params > 2 and len(self.app.data.s21) == 0:
+            QtWidgets.QMessageBox.warning(
+                self, "No S21 data to save", "There is no S21 data to save."
+            )
+            return
+
+        # Ensure target directory exists
+        target_dir = Path(dir)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logger.exception("Failed to create target directory %s", dir)
+            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to create target directory: {dir}")
+            return
+
+        # Use provided filename argument (base name or name+ext) to determine save filename
+        ext = "s1p" if nr_params == 1 else "s2p"
+        try:
+            given = Path(filename)
+            if given.suffix:
+                # If extension provided but not matching desired ext, replace it
+                if given.suffix.lower() != f".{ext}":
+                    base_name = given.with_suffix(f".{ext}")
+                else:
+                    base_name = given
+            else:
+                base_name = given.with_suffix(f".{ext}")
+            filename_path = target_dir / base_name.name
+        except Exception:
+            # Fallback to default name
+            base_name = Path("touchstone").with_suffix(f".{ext}")
+            filename_path = target_dir / base_name.name
+
+        # Ensure uniqueness by appending suffix when necessary
+        i = 1
+        unique_filename = filename_path
+        while unique_filename.exists():
+            unique_filename = target_dir / f"{filename_path.stem}-{i}.{ext}"
+            i += 1
+        filename = unique_filename
+
+        ts = Touchstone(str(filename))
+        ts.sdata[0] = list(self.app.data.s11)
+        if nr_params > 1:
+            ts.sdata[1] = list(self.app.data.s21)
+            # populate placeholders for the other ports if needed
+            for dp in self.app.data.s11:
+                ts.sdata[2].append(Datapoint(dp.freq, 0, 0))
+                ts.sdata[3].append(Datapoint(dp.freq, 0, 0))
+        try:
+            ts.save(nr_params)
+            logger.info("Saved %s to %s", ext, filename)
+            return filename
+        except IOError as e:
+            logger.exception("Error during file export: %s", e)
+            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to save file: {e}")
+            return
+
 
     def loadReferenceFile(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
