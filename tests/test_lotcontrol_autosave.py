@@ -35,6 +35,15 @@ def test_autosave_on_evaluate(tmp_path):
     lot_dir.mkdir()
     lc.current_lot_name = "lotA"
     lc.current_lot_path = lot_dir
+    # Simulate user-entered PCB lot in UI
+    try:
+        lc.pcb_lot_field.setText("LOT99")
+    except Exception:
+        # In case the widget isn't available, set attribute directly
+        try:
+            setattr(lc, "pcb_lot_field", type("X", (), {"text": lambda self: "LOT99"})())
+        except Exception:
+            pass
 
     # Connect signal
     se.results_ready.connect(lc.save_results_for_latest)
@@ -68,6 +77,18 @@ def test_autosave_on_evaluate(tmp_path):
         jd = json.load(f)
     assert jd.get("serial") == td.serial
     assert jd.get("id") == td.id
+    # New: verify pcb_lot was set on the TestData and written to JSON
+    assert getattr(td, "pcb_lot", None) == "LOT99"
+    assert jd.get("pcb_lot") == "LOT99"
+
+    # Verify a per-lot CSV log was created and contains pcb_lot
+    csv_path = lot_dir / f"{lc.current_lot_name}_log.csv"
+    assert csv_path.exists(), "Expected per-lot CSV log to exist"
+    import csv as _csv
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = _csv.DictReader(f)
+        rows = list(reader)
+    assert rows[0].get("pcb_lot") == "LOT99"
 
     # Verify lot.json sample count updated
     info_file = lot_dir / "lot.json"

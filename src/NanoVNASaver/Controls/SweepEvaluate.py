@@ -32,7 +32,7 @@ from ..Formatting import (
     format_frequency_sweep,
     parse_frequency,
 )
-from ..Charts import LogMagChart
+from ..Charts import LogMagChart, LogMagTest
 from .Control import Control
 
 if TYPE_CHECKING:
@@ -126,8 +126,9 @@ class SweepEvaluate(Control):
         self.layout.addRow(self.progress_bar)
 
         # Create charts for S11 Return Loss and S21 Insertion Loss
-        self.s11_chart = LogMagChart("S11 Return Loss")
-        self.s21_chart = LogMagChart("S21 Insertion Loss")
+        # Use LogMagTest so the charts can render TestSpec markers
+        self.s11_chart = LogMagTest("S11 Return Loss")
+        self.s21_chart = LogMagTest("S21 Insertion Loss")
     
         # Create a horizontal layout for the charts arranged side by side
         charts_layout = QtWidgets.QHBoxLayout()
@@ -348,6 +349,21 @@ class SweepEvaluate(Control):
         self.spec = spec
         self.spec_label.setText(str(Path(path).name))
         self.populate_table()
+        # Pass filtered spec to the charts so they can draw markers for their
+        # respective parameters (s11/s21)
+        from ..TestSpec import TestSpec as _TS
+
+        s11_tests = [t for t in spec.tests if t.parameter.lower() == "s11"]
+        s21_tests = [t for t in spec.tests if t.parameter.lower() == "s21"]
+        try:
+            self.s11_chart.setTestSpec(_TS(sweep=spec.sweep, tests=s11_tests))
+        except Exception:
+            self.s11_chart.setTestSpec(None)
+        try:
+            self.s21_chart.setTestSpec(_TS(sweep=spec.sweep, tests=s21_tests))
+        except Exception:
+            self.s21_chart.setTestSpec(None)
+
         # Update Test button state whenever a spec is loaded
         try:
             self.update_test_button_state()

@@ -51,6 +51,8 @@ class LotControl(Control):
         self.lot_counter = 1
         self.lots: dict[str, str] = {}
         self.lot_samples: dict[str, int] = {}
+        self.lot_passed: dict[str, int] = {}
+        self.lot_failed: dict[str, int] = {}
         self.highlighted_row: int | None = None
         # PCB lot field state: True if the PCB Lot text field is empty
         self.pcb_lot_empty: bool = True
@@ -75,9 +77,20 @@ class LotControl(Control):
         self.samples_label.setMinimumHeight(24)
         self.layout.addRow("Samples:", self.samples_label)
 
+        # Passed / Failed counts for the currently selected lot
+        self.passed_label = QtWidgets.QLabel("0")
+        self.passed_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.passed_label.setMinimumHeight(24)
+        self.layout.addRow("Passed count:", self.passed_label)
+
+        self.failed_label = QtWidgets.QLabel("0")
+        self.failed_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.failed_label.setMinimumHeight(24)
+        self.layout.addRow("Failed count:", self.failed_label)
+
         # Current serial label
-        self.serial_label = QtWidgets.QLabel("#N/A")
-        self.layout.addRow("Current serial:", self.serial_label)
+        #self.serial_label = QtWidgets.QLabel("#N/A")
+        #self.layout.addRow("Current serial:", self.serial_label)
 
         # PCB Lot input field
         self.pcb_lot_field = QtWidgets.QLineEdit()
@@ -140,7 +153,11 @@ class LotControl(Control):
         # Update samples display for selected lot
         samples = self.lot_samples.get(lot_name, 0)
         self.samples_label.setText(f"{samples}")
-        self.serial_label.setText("#N/A")
+        passed = self.lot_passed.get(lot_name, 0)
+        failed = self.lot_failed.get(lot_name, 0)
+        self.passed_label.setText(str(passed))
+        self.failed_label.setText(str(failed))
+        #self.serial_label.setText("#N/A")
         # Clear PCB lot field when selecting a lot
         if hasattr(self, "pcb_lot_field"):
             self.pcb_lot_field.setText("")
@@ -181,13 +198,17 @@ class LotControl(Control):
         lot_path = self.lots.get(lot_name, str(self.working_directory / lot_name))
         # refresh samples from disk if present
         lot_dir = Path(lot_path)
-        info_file = lot_dir / "lot.json"
+        info_file = lot_dir / f"{lot_name}.json"
         if info_file.exists():
             try:
                 with info_file.open("r", encoding="utf-8") as f:
                     info = json.load(f)
                 samples = int(info.get("samples", 0))
+                passed = int(info.get("passed", 0))
+                failed = int(info.get("failed", 0))
                 self.lot_samples[lot_name] = samples
+                self.lot_passed[lot_name] = passed
+                self.lot_failed[lot_name] = failed
             except Exception:
                 logger.exception("Failed reading lot info for %s", lot_name)
         self.set_lot_selected(lot_name, lot_path)
@@ -245,18 +266,20 @@ class LotControl(Control):
                     ):
                         info_file = candidate
                         samples = int(info.get("samples", 0))
+                        passed = int(info.get("passed", 0))
+                        failed = int(info.get("failed", 0))
                         # add lot without creating on disk
-                        self.add_lot(child.name, str(child), samples=samples, create_on_disk=False)
+                        self.add_lot(child.name, str(child), samples=samples, passed=passed, failed=failed, create_on_disk=False)
                         break
                 except Exception:
                     logger.exception("Invalid lot json at %s", candidate)
                     continue
 
-    def add_lot(self, lot_name: str, path: str | None = None, *, samples: int = 0, create_on_disk: bool = True) -> None:
+    def add_lot(self, lot_name: str, path: str | None = None, *, samples: int = 0, passed: int = 0, failed: int = 0, create_on_disk: bool = True) -> None:
         """Add a lot entry to the table (name + sample count).
 
         If create_on_disk is True, this will create a directory in self.working_directory
-        and write a `lot.json` file with the lot metadata (if it does not already exist).
+        and write a `{lot_name}.json` file with the lot metadata (if it does not already exist).
         """
         # Determine directory
         lot_dir = Path(path) if path else (self.working_directory / lot_name)
@@ -268,6 +291,8 @@ class LotControl(Control):
                     info = {
                         "lot_name": lot_name,
                         "samples": int(samples),
+                        "passed": int(passed),
+                        "failed": int(failed),
                         "creation_date": datetime.now().isoformat(),
                     }
                     with info_file.open("w", encoding="utf-8") as f:
@@ -278,6 +303,8 @@ class LotControl(Control):
                         with info_file.open("r", encoding="utf-8") as f:
                             existing = json.load(f)
                         samples = int(existing.get("samples", samples))
+                        passed = int(existing.get("passed", passed))
+                        failed = int(existing.get("failed", failed))
                     except Exception:
                         logger.exception("Failed reading existing lot info %s", info_file)
             except Exception:
@@ -287,6 +314,8 @@ class LotControl(Control):
         if lot_name in self.lots:
             self.lots[lot_name] = str(lot_dir)
             self.lot_samples[lot_name] = int(samples)
+            self.lot_passed[lot_name] = int(passed)
+            self.lot_failed[lot_name] = int(failed)
             # update table row for samples
             for r in range(self.table.rowCount()):
                 if self.table.item(r, 0).text() == lot_name:
@@ -303,6 +332,8 @@ class LotControl(Control):
 
         self.lots[lot_name] = str(lot_dir)
         self.lot_samples[lot_name] = int(samples)
+        self.lot_passed[lot_name] = int(passed)
+        self.lot_failed[lot_name] = int(failed)
         samples_item = QtWidgets.QTableWidgetItem(str(self.lot_samples[lot_name]))
         samples_item.setFlags(samples_item.flags() ^ QtCore.Qt.ItemIsEditable)
         self.table.setItem(row, 1, samples_item)
@@ -338,6 +369,7 @@ class LotControl(Control):
 
         # Try to accept either a TestData object or a legacy list of TestResult
         try:
+            ts = datetime.now().isoformat()
             results = getattr(test_data, "results", None)
             serial = getattr(test_data, "serial", None)
             print(f"LotControl: Sarjanumero {serial}")
@@ -353,13 +385,22 @@ class LotControl(Control):
             except Exception:
                 pcb_lot = getattr(test_data, "pcb_lot", None)
             meta = getattr(test_data, "meta", None)
+            # Ensure the TestData instance carries the PCB lot value we computed so that
+            # subsequent writers (CSV/Excel) see the same value as we put in the results JSON.
+            try:
+                setattr(test_data, "pcb_lot", pcb_lot)
+                setattr(test_data, "timestamp", ts)
+            except Exception:
+                # test_data might be a plain list (legacy mode) or otherwise not allow attributes
+                pass
+
             if results is None and isinstance(test_data, list):
                 # Legacy list: wrap into a simple TestData-like struct
                 results = test_data
                 serial = getattr(self, "current_lot_name", None) or "NOSERIAL"
                 from uuid import uuid4
                 tid = str(uuid4())
-                passed = "UNKNOWN",
+                passed = "UNKNOWN"
                 pcb_lot = "UNKNOWN"
                 meta = "legacy"
                 
@@ -386,7 +427,7 @@ class LotControl(Control):
             jt = {
                 "serial": serial,
                 "id": tid,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": ts,
                 "meta": meta,
                 "passed": passed,   
                 "pcb_lot": pcb_lot,
@@ -429,47 +470,27 @@ class LotControl(Control):
 
         except Exception:
             logger.exception("Failed saving full S-parameter files for TestData %s", tid)
-        '''
-        try:
-            from ..Touchstone import Touchstone
-            ts_sub = Touchstone()
-            ts_sub.opts = ts_full.opts
-            ts_sub.s11 = list(ts_full.s11) if getattr(ts_full, "s11", None) else []
-            ts_sub.s21 = list(ts_full.s21) if getattr(ts_full, "s21", None) else []
-
-            base = f"{serial}_{tid}".replace(" ", "_")
-
-            if ts_sub.s11:
-                try:
-                    saved_s1 = save_s1p(ts_sub, sample_dir, base_name=f"{base}_s1p")
-                    logger.info("Saved full S1P for TestData %s to %s", tid, saved_s1)
-                    saved_any = True
-                except Exception:
-                    logger.exception("Failed saving full S1P for TestData %s", tid)
-
-            # Save S2P only if both S11 and S21 exist and lengths match
-            if ts_sub.s11 and ts_sub.s21:
-                if len(ts_sub.s11) == len(ts_sub.s21):
-                    try:
-                        saved_s2 = save_s2p(ts_sub, sample_dir, base_name=f"{base}_s2p")
-                        logger.info("Saved full S2P for TestData %s to %s", tid, saved_s2)
-                        saved_any = True
-                    except Exception:
-                        logger.exception("Failed saving full S2P for TestData %s", tid)
-                else:
-                    logger.warning("S11 and S21 lengths differ; skipping S2P for TestData %s", tid)
-        except Exception:
-            logger.exception("Failed creating Touchstone for TestData %s", tid)
-        '''
+    
         # update sample count and lot.json (stored at lot root)
         lot_name = self.current_lot_name
         if lot_name and saved_any:
             self.lot_samples[lot_name] = self.lot_samples.get(lot_name, 0) + 1
+            # Ensure counters exist
+            self.lot_passed[lot_name] = self.lot_passed.get(lot_name, 0)
+            self.lot_failed[lot_name] = self.lot_failed.get(lot_name, 0)
+            # Increment pass/fail based on TestData.passed (True/False)
+            if passed is True:
+                self.lot_passed[lot_name] += 1
+            elif passed is False:
+                self.lot_failed[lot_name] += 1
+
             info_file = out_dir / f"{lot_name}.json"
             try:
                 info = {
                     "lot_name": lot_name,
                     "samples": int(self.lot_samples[lot_name]),
+                    "passed": int(self.lot_passed[lot_name]),
+                    "failed": int(self.lot_failed[lot_name]),
                     "creation_date": datetime.now().isoformat(),
                 }
                 with info_file.open("w", encoding="utf-8") as f:
@@ -477,91 +498,231 @@ class LotControl(Control):
             except Exception:
                 logger.exception("Failed updating lot info %s", info_file)
 
-        # refresh UI sample count
+        # refresh UI sample count and pass/fail counts
         if saved_any and self.current_lot_name:
             self.samples_label.setText(str(self.lot_samples.get(self.current_lot_name, 0)))
+            self.passed_label.setText(str(self.lot_passed.get(self.current_lot_name, 0)))
+            self.failed_label.setText(str(self.lot_failed.get(self.current_lot_name, 0)))
+
+        # Append a CSV log entry for this test data to a per-lot CSV file
+        try:
+            if lot_name and saved_any:
+                csv_path = out_dir / f"{lot_name}_log.csv"
+                # Default: no filter, write CSV (excel=False)
+                try:
+                    self.log_write(test_data, csv_path, filter=None, excel=False)
+                    self.log_write(test_data, csv_path, ["samples","failing","passed"], excel=True) # Also write a human-readable Excel version
+                except Exception:
+                    logger.exception("Failed writing CSV log for %s to %s", tid, csv_path)
+        except Exception:
+            logger.exception("Unexpected error when attempting to write CSV log")
+
+    def log_write(self, test_data: TestData, path: Path, filter: list[str] | None = None, excel: bool = False) -> None:
+        """Write a single CSV or Excel row for the provided TestData to the file at ``path``.
+
+        Parameters
+        - test_data: TestData to log
+        - path: Path to CSV or XLSX file (if ``excel=True`` an ``.xlsx`` file will be used)
+        - filter: list of attribute names to omit (checks un-prefixed names like "passed", "limit_db")
+        - excel: if True, write an Excel (.xlsx) file instead of CSV. Falls back to CSV when openpyxl not available.
+        """
+        import csv as _csv
+        import json as _json
+
+        p = Path(path)
+        filt = set(filter or [])
+
+        # Normalize results list and ensure TestData-like structure
+        results = getattr(test_data, "results", None)
+        if results is None:
+            logger.warning("log_write: no results to log for %s", getattr(test_data, "id", ""))
+            results = []
+
+        # Helper to sanitize test point name to a safe column prefix
+        def _prefix_name(name: str, index: int) -> str:
+            if not name:
+                name = f"tp{index}"
+            # Replace whitespace and problematic chars
+            return "".join(ch if ch.isalnum() or ch in ("-","_") else "_" for ch in str(name)).replace(" ", "_")
+
+        # --- Unified header and row construction ---
+        def _build_header_and_row():
+            top_fields = ["timestamp", "serial", "id", "meta", "passed", "pcb_lot"]
+            # Always include top_fields; filters only apply to per-test attributes
+            header_cols = top_fields.copy()
+
+            # Build per-test columns. Allow duplicate names by appending index suffix when needed
+            prefix_counts: dict[str, int] = {}
+            for i, r in enumerate(results, start=1):
+                tp = getattr(r, "tp", None)
+                tp_name = getattr(tp, "name", None) if tp is not None else None
+                prefix = _prefix_name(tp_name, i)
+                # Ensure unique
+                if prefix in prefix_counts:
+                    prefix_counts[prefix] += 1
+                    prefix = f"{prefix}_{prefix_counts[prefix]}"
+                else:
+                    prefix_counts[prefix] = 1
+
+                # TestPoint attributes to expose
+                tp_attrs = ["parameter", "frequency", "span", "limit_db", "direction"]
+                for a in tp_attrs:
+                    # filter only applies to per-test attributes
+                    if a in filt:
+                        continue
+                    header_cols.append(f"{prefix}_{a}")
+
+                # TestResult attributes
+                res_attrs = ["passed", "min", "max", "failing", "samples"]
+                for a in res_attrs:
+                    # filter only applies to per-test attributes
+                    if a in filt:
+                        continue
+                    header_cols.append(f"{prefix}_{a}")
+
+            # Build row dict matching header columns
+            row: dict = {}
+            row["timestamp"] = getattr(test_data, "timestamp", None)
+            row["serial"] = getattr(test_data, "serial", None)
+            row["id"] = getattr(test_data, "id", None)
+            row["meta"] = getattr(test_data, "meta", None)
+            row["passed"] = getattr(test_data, "passed", None)
+            row["pcb_lot"] = getattr(test_data, "pcb_lot", None)
+
+            # Fill per-test values
+            seen_prefixes: dict[str, int] = {}
+            for i, r in enumerate(results, start=1):
+                tp = getattr(r, "tp", None)
+                tp_name = getattr(tp, "name", None) if tp is not None else None
+                prefix = _prefix_name(tp_name, i)
+                if prefix in seen_prefixes:
+                    seen_prefixes[prefix] += 1
+                    prefix = f"{prefix}_{seen_prefixes[prefix]}"
+                else:
+                    seen_prefixes[prefix] = 1
+
+                if tp is not None:
+                    tp_attrs = {
+                        "parameter": getattr(tp, "parameter", None),
+                        "frequency": getattr(tp, "frequency", None),
+                        "span": getattr(tp, "span", None),
+                        "limit_db": getattr(tp, "limit_db", None),
+                        "direction": getattr(tp, "direction", None),
+                    }
+                else:
+                    tp_attrs = {}
+                for a, v in tp_attrs.items():
+                    key = f"{prefix}_{a}"
+                    row[key] = v
+
+                res_attrs = {
+                    "passed": getattr(r, "passed", None),
+                    "min": getattr(r, "min", None),
+                    "max": getattr(r, "max", None),
+                    "failing": getattr(r, "failing", None),
+                    "samples": getattr(r, "samples", None),
+                }
+                for a, v in res_attrs.items():
+                    key = f"{prefix}_{a}"
+                    if a == "failing":
+                        row[key] = _json.dumps(v)
+                    else:
+                        row[key] = v
+
+            # Ensure row has keys for header (top fields are preserved regardless of filter)
+            for h in header_cols:
+                row.setdefault(h, None)
+            return header_cols, row
+
+        def _read_existing_header(path_obj: Path, use_excel: bool) -> list | None:
+            # Return existing header as list of column names, or None if not readable/existing
+            if use_excel:
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(path_obj)
+                    ws = wb.active
+                    first_row = next(ws.iter_rows(min_row=1, max_row=1))
+                    return [c.value for c in first_row]
+                except Exception:
+                    return None
+            else:
+                try:
+                    if not path_obj.exists():
+                        return None
+                    with path_obj.open("r", encoding="utf-8", newline="") as f:
+                        import csv as _csv_local
+                        reader = _csv_local.reader(f)
+                        return next(reader, None)
+                except Exception:
+                    return None
+
+        # Build header and row
+        header_cols, row = _build_header_and_row()
+
+        # If excel requested, check openpyxl availability and fallback if missing
+        if excel:
+            try:
+                import openpyxl  # noqa: F401
+            except Exception:
+                logger.warning("openpyxl not available; falling back to CSV for excel=True")
+                excel = False
+
+        # CSV branch
+        if not excel:
+            existing = _read_existing_header(p, use_excel=False)
+            if existing:
+                fieldnames = existing
+                write_header = False
+                mode = "a"
+            else:
+                fieldnames = header_cols
+                write_header = True
+                mode = "w"
+
+            # Write CSV
+            try:
+                with p.open(mode, encoding="utf-8", newline="") as f:
+                    writer = _csv.DictWriter(f, fieldnames=fieldnames)
+                    if write_header:
+                        writer.writeheader()
+                    writer.writerow(row)
+            except Exception:
+                logger.exception("Failed writing CSV log row to %s", p)
+            return
+
+        # Excel branch
+        # Ensure .xlsx suffix
+        if p.suffix.lower() != ".xlsx":
+            p = p.with_suffix(".xlsx")
+
+        existing = _read_existing_header(p, use_excel=True)
+        try:
+            from openpyxl import Workbook, load_workbook
+        except Exception:
+            logger.exception("openpyxl import failed; cannot write excel file")
+            # fallback to csv
+            self.log_write(test_data, path, filter=filter, excel=False)
+            return
+
+        if existing:
+            fieldnames = existing
+        else:
+            # create workbook and write header
+            wb = Workbook()
+            ws = wb.active
+            fieldnames = header_cols
+            ws.append(fieldnames)
+            wb.save(p)
+
+        # Append row in field order
+        values = [row.get(fn, None) for fn in fieldnames]
+        try:
+            wb = load_workbook(p)
+            ws = wb.active
+            ws.append(values)
+            wb.save(p)
+        except Exception:
+            logger.exception("Failed writing Excel log row to %s", p)
 
 
-# Helper functions for saving touchstone files directly in this module
-def _unique_filename(directory: Path, base: str, ext: str) -> Path:
-    """Return a non-existing filename in ``directory`` with extension ``ext``.
 
-    If ``base.ext`` exists, appends a numeric suffix before the extension,
-    e.g. ``base-1.ext``, ``base-2.ext`` etc.
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-    cand = directory / f"{base}.{ext}"
-    i = 1
-    while cand.exists():
-        cand = directory / f"{base}-{i}.{ext}"
-        i += 1
-    return cand
-
-
-def save_s1p(ts: Touchstone, directory: Path, base_name: Optional[str] = "touchstone") -> Path:
-    """Save a Touchstone object as a 1-port file (.s1p) in ``directory``.
-
-    Args:
-        ts: Touchstone instance containing S11 data.
-        directory: Directory to write the file into. Will be created if missing.
-        base_name: Base name for the file (without extension). Defaults to "touchstone".
-
-    Returns:
-        Path to the written file.
-
-    Raises:
-        ValueError: if S11 data is empty.
-        IOError: on file write errors.
-    """
-    if not ts.s11:
-        raise ValueError("No S11 data to save as S1P")
-    filename = _unique_filename(Path(directory), base_name, "s1p")
-    ts.filename = str(filename)
-    ts.save(1)
-    logger.info("Saved S1P to %s", filename)
-    return filename
-
-
-def save_s2p(ts: Touchstone, directory: Path, base_name: Optional[str] = "touchstone") -> Path:
-    """Save a Touchstone object as a 2-port file (.s2p) in ``directory``.
-
-    Args:
-        ts: Touchstone instance containing S11 and S21 data.
-        directory: Directory to write the file into. Will be created if missing.
-        base_name: Base name for the file (without extension). Defaults to "touchstone".
-
-    Returns:
-        Path to the written file.
-
-    Raises:
-        ValueError: if S11 or S21 data is empty.
-        IOError: on file write errors.
-    """
-    if not ts.s11:
-        raise ValueError("No S11 data to save as S2P")
-    if not ts.s21:
-        raise ValueError("No S21 data to save as S2P")
-    filename = _unique_filename(Path(directory), base_name, "s2p")
-    ts.filename = str(filename)
-    ts.save(4)
-    logger.info("Saved S2P to %s", filename)
-    return filename
-
-
-def save_result(result: TestResult, directory: Path):
-    """Save a TestResult metadata JSON file into ``directory`` and return the path."""
-    directory.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "id": result.id,
-        "serial": result.serial,
-        "passed": result.passed,
-        "min": result.min,
-        "max": result.max,
-        "failing": result.failing,
-        "samples": result.samples,
-        "test_name": getattr(result.tp, "name", None),
-    }
-    file = directory / f"{result.serial}_{result.id}.json"
-    with file.open("w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-    return file

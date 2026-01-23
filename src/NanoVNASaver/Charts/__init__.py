@@ -4,7 +4,7 @@ from .CLogMag import CombinedLogMagChart
 from .Frequency import FrequencyChart
 from .GroupDelay import GroupDelayChart
 from .Inductance import InductanceChart
-from .LogMag import LogMagChart
+from .LogMag import LogMagChart, LogMagTest
 from .Magnitude import MagnitudeChart
 from .MagnitudeZ import MagnitudeZChart
 from .MagnitudeZSeries import MagnitudeZSeriesChart
@@ -32,6 +32,7 @@ __all__ = [
     "GroupDelayChart",
     "InductanceChart",
     "LogMagChart",
+    "LogMagTest",
     "MagnitudeChart",
     "MagnitudeZChart",
     "MagnitudeZSeriesChart",

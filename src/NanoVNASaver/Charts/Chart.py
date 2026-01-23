@@ -306,7 +306,28 @@ class Chart(QtWidgets.QWidget):
             filename += ".png"
         self.grab().save(filename)
 
+    def saveScreenshotTo(self, filepath) -> None:
+        """Save the current chart screenshot to the given filepath.
+
+        Parameters
+        - filepath: a filesystem path (str or pathlib.Path) where the image should be saved.
+
+        Behavior mirrors the dialog-based save: if the provided path has no
+        suffix, ".png" will be appended. Errors are logged but not raised.
+        """
+        logger.info("Saving %s to file %s...", self.name, filepath)
+        filename = str(filepath)
+        if not QtCore.QFileInfo(filename).suffix():
+            filename += ".png"
+        try:
+            ok = self.grab().save(filename)
+            if not ok:
+                logger.error("Failed to save screenshot to %s", filename)
+        except Exception:
+            logger.exception("Failed saving %s to %s", self.name, filename)
+
     def copy(self) -> "Chart":
+
         new_chart = self.__class__(self.name)
         new_chart.data = self.data
         new_chart.reference = self.reference

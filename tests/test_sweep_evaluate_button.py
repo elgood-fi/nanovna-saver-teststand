@@ -80,3 +80,29 @@ def test_test_button_enabled_when_all_conditions_met():
 
     se.update_test_button_state()
     assert se.btn_test.isEnabled()
+
+
+def test_load_spec_assigns_tests_to_charts(tmp_path):
+    ensure_qapp()
+    app = FakeApp(cal_valid=True, vna_connected=True)
+    se = SweepEvaluate(app)
+
+    spec = {
+        "sweep": {},
+        "tests": [
+            {"name": "P1", "parameter": "s11", "frequency": 1000, "span": 10, "limit_db": -3.0, "direction": "under"},
+            {"name": "P2", "parameter": "s21", "frequency": 2000, "span": 20, "limit_db": -5.0, "direction": "over"},
+        ],
+    }
+    p = tmp_path / "spec.json"
+    p.write_text(__import__("json").dumps(spec))
+
+    se.load_spec(str(p))
+    # s11 chart should receive only s11 tests
+    assert se.s11_chart.testspec is not None
+    assert len(se.s11_chart.testspec.tests) == 1
+    assert se.s11_chart.testspec.tests[0].parameter.lower() == "s11"
+
+    assert se.s21_chart.testspec is not None
+    assert len(se.s21_chart.testspec.tests) == 1
+    assert se.s21_chart.testspec.tests[0].parameter.lower() == "s21"

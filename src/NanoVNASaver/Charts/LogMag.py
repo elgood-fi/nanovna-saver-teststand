@@ -26,6 +26,7 @@ from ..RFTools import Datapoint
 from ..SITools import log_floor_125
 from .Chart import Chart
 from .Frequency import FrequencyChart
+from ..Formatting import format_frequency_short, format_gain
 
 logger = logging.getLogger(__name__)
 
@@ -177,3 +178,109 @@ class LogMagChart(FrequencyChart):
         new_chart.isInverted = self.isInverted
         new_chart.span = self.span
         return new_chart
+
+
+class LogMagTest(LogMagChart):
+    """Log magnitude chart that can render test-spec limit markers.
+
+    The chart is passed a TestSpec and will draw a limit marker for each
+    TestPoint in the spec. The marker width is determined by the TestPoint
+    span (frequency span in Hz) and the vertical position corresponds to
+    the TestPoint.limit_db converted to the chart's value-space (respecting
+    inversion via `isInverted`).
+
+    Direction semantics:
+    - "under": draw a box with top removed (open-top 'U')
+    - "over": draw a box with bottom removed (open-bottom '^')
+    """
+
+    def __init__(self, name: str = "") -> None:
+        super().__init__(name)
+        self.testspec = None
+
+    def setTestSpec(self, spec) -> None:
+        self.testspec = spec
+        self.update()
+
+    def compute_test_marker(self, tp):
+        """Compute marker geometry for a TestPoint.
+
+        Returns a dict with x_left, x_right, y (pixel coordinates) and direction.
+        This method is intentionally public so unit tests can assert geometry
+        without relying on actual painting.
+        """
+        # Frequency span to x coordinates
+        low = tp.frequency - tp.span // 2
+        high = tp.frequency + tp.span // 2
+        x_left = max(self.leftMargin, self.getXPosition(Datapoint(low, 0, 0)))
+        x_right = min(
+            self.leftMargin + self.dim.width,
+            self.getXPosition(Datapoint(high, 0, 0)),
+        )
+        x_mid = int((x_left + x_right) // 2)
+
+        # Convert limit_db to chart value-space (respecting inversion)
+        value = -tp.limit_db if self.isInverted else tp.limit_db
+        # Guard against zero span
+        span = self.span or 1e-9
+        y = self.topMargin + round((self.maxValue - value) / span * self.dim.height)
+
+        # Determine vertical line start depending on direction: "under" -> line from top, "over" -> line from bottom
+        if (tp.direction or "over").lower() == "under":
+            line_start_y = self.topMargin
+        else:
+            line_start_y = self.topMargin + self.dim.height
+
+        return {
+            "x_left": int(x_left),
+            "x_right": int(x_right),
+            "x_mid": int(x_mid),
+            "y": int(y),
+            "line_start_y": int(line_start_y),
+            "direction": tp.direction,
+            "tp": tp,
+        }
+
+    def drawValues(self, qp: QtGui.QPainter) -> None:
+        # Let the parent draw everything else first
+        super().drawValues(qp)
+
+        if not self.testspec:
+            return
+
+        qp.setPen(QtGui.QPen(Chart.color.text, 2))
+        # marker_height controls arrowhead size
+        for tp in self.testspec.tests:
+            geom = self.compute_test_marker(tp)
+            xl = geom["x_left"]
+            xr = geom["x_right"]
+            xm = geom["x_mid"]
+            y = geom["y"]
+            line_start = geom["line_start_y"]
+            direction = (geom["direction"] or "over").lower()
+
+            # Draw the vertical line from top or bottom up to the arrow tip
+            qp.drawLine(xm, line_start, xm, y)
+
+            # Arrowhead size: base on span width but keep reasonable limits
+            head_w = max(6, int((xr - xl) / 4))
+            head_h = max(5, int(head_w / 2))
+
+            if direction == "under":
+                # Arrow points downwards: draw two lines forming a V pointing down at (xm, y)
+                qp.drawLine(xm - head_w, y - head_h, xm, y)
+                qp.drawLine(xm + head_w, y - head_h, xm, y)
+            else:
+                # "over" or default: arrow points upwards
+                qp.drawLine(xm - head_w, y + head_h, xm, y)
+                qp.drawLine(xm + head_w, y + head_h, xm, y)
+
+            # Optionally label with the test name
+            try:
+                qp.drawText(xl + 10, y - 15, tp.name)
+                qp.drawText(xl + 10, y , f"{format_gain(tp.limit_db)}")
+                qp.drawText(xl + 10, y + 15, f"{format_frequency_short(tp.span)}")
+            except Exception:
+                # Fallback: ignore drawing errors (keeps tests headless-friendly)
+                pass
+
