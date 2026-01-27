@@ -78,6 +78,8 @@ class SweepEvaluate(Control):
         self.latest_result = None
 
         self.test_data = None
+        # MD5 checksum of the loaded test spec file, or None if no spec loaded
+        self.test_checksum: str | None = None
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setMaximum(100)
@@ -344,10 +346,20 @@ class SweepEvaluate(Control):
 
         spec = parse_test_spec(path)
         if spec is None:
+            # ensure checksum is cleared if loading failed
+            self.test_checksum = None
             QtWidgets.QMessageBox.warning(self, "Error", "Failed to load test spec")
             return
         self.spec = spec
-        self.spec_label.setText(str(Path(path).name))
+        # compute md5 checksum of the file and store
+        try:
+            import hashlib as _hashlib
+
+            with open(path, "rb") as _f:
+                self.test_checksum = _hashlib.md5(_f.read()).hexdigest()
+        except Exception:
+            self.test_checksum = None
+        self.spec_label.setText(f"{str(Path(path).name)} - {self.test_checksum[:8] if self.test_checksum else 'no checksum'}")
         self.populate_table()
         # Pass filtered spec to the charts so they can draw markers for their
         # respective parameters (s11/s21)
@@ -517,6 +529,23 @@ class SweepEvaluate(Control):
             json.dump({"spec": self.spec.sweep, "results": results}, f, indent=2)
 
     def _on_test_button_clicked(self):
+        # Before prompting, check test spec checksum against the selected lot's checksum
+        try:
+            se_checksum = getattr(self, "test_checksum", None)
+            lot_checksum = None
+            try:
+                if hasattr(self.app, "lot_control"):
+                    lot_name = getattr(self.app.lot_control, "current_lot_name", None)
+                    if lot_name:
+                        lot_checksum = self.app.lot_control.lot_checksum.get(lot_name)
+            except Exception:
+                lot_checksum = None
+            if se_checksum != lot_checksum:
+                QtWidgets.QMessageBox.warning(self, "Warning", "Warning! Uncrecognized test configuration checksum detected!")
+        except Exception:
+            # if anything goes wrong, we still proceed to prompt for serial
+            logger.exception("Failed checking test spec checksum against lot checksum")
+
         text, ok = QtWidgets.QInputDialog.getText(self, "Serial number", "Enter serial number:")
         if not ok:
             return
@@ -526,6 +555,34 @@ class SweepEvaluate(Control):
             return
         self.current_serial = serial
         logger.debug("Serial entered: %s", self.current_serial)
+        # Reset touchstone data to a clean initial state before starting a test
+        try:
+            from ..Touchstone import Touchstone
+            try:
+                self.app.data = Touchstone()
+            except Exception:
+                # If assignment fails for some reason, log and continue
+                logger.exception("Failed resetting app.data to new Touchstone")
+            try:
+                self.app.ref_data = Touchstone()
+            except Exception:
+                logger.exception("Failed resetting app.ref_data to new Touchstone")
+            # Emit an update signal if available so UI can react to cleared data
+            try:
+                # Reinitialize worker internal buffers to avoid old data being
+                # pushed back into the UI when the first segment completes.
+                if hasattr(self.app, 'worker'):
+                    try:
+                        self.app.worker.init_data()
+                    except Exception:
+                        logger.exception("Failed resetting worker data before test")
+                if hasattr(self.app, 'worker') and hasattr(self.app.worker, 'signals'):
+                    self.app.worker.signals.updated.emit()
+            except Exception:
+                # not critical
+                logger.debug("Could not emit worker updated signal after clearing touchstone data")
+        except Exception:
+            logger.exception("Error while re-initializing Touchstone data before test")
         try:
             self.app.sweep_start()
         except Exception:

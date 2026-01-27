@@ -729,7 +729,7 @@ class CalibrationWindow(QtWidgets.QWidget):
             self.notes_textedit.appendPlainText(note)
         self.app.settings.setValue("CalibrationFile", filename)
         self.app.sweep_control.update_text()
-
+    
     def saveCalibration(self):
         if not self.app.calibration.isCalculated:
             logger.debug("Attempted to save an uncalculated calibration.")

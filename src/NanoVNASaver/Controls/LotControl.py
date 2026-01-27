@@ -53,6 +53,8 @@ class LotControl(Control):
         self.lot_samples: dict[str, int] = {}
         self.lot_passed: dict[str, int] = {}
         self.lot_failed: dict[str, int] = {}
+        # Per-lot test spec checksum (value of SweepEvaluate.test_checksum at creation)
+        self.lot_checksum: dict[str, str | None] = {}
         self.highlighted_row: int | None = None
         # PCB lot field state: True if the PCB Lot text field is empty
         self.pcb_lot_empty: bool = True
@@ -288,15 +290,25 @@ class LotControl(Control):
                 lot_dir.mkdir(parents=True, exist_ok=True)
                 info_file = lot_dir / f"{lot_name}.json"
                 if not info_file.exists():
+                    # Determine checksum from SweepEvaluate (if available)
+                    try:
+                        se = getattr(self.app, "sweep_evaluate", None)
+                        checksum_val = getattr(se, "test_checksum", None)
+                    except Exception:
+                        checksum_val = None
+
                     info = {
                         "lot_name": lot_name,
                         "samples": int(samples),
                         "passed": int(passed),
                         "failed": int(failed),
+                        "checksum": checksum_val,
                         "creation_date": datetime.now().isoformat(),
                     }
                     with info_file.open("w", encoding="utf-8") as f:
                         json.dump(info, f, indent=2)
+                    # keep internal state for checksum
+                    self.lot_checksum[lot_name] = checksum_val
                 else:
                     # read existing info
                     try:
@@ -305,6 +317,8 @@ class LotControl(Control):
                         samples = int(existing.get("samples", samples))
                         passed = int(existing.get("passed", passed))
                         failed = int(existing.get("failed", failed))
+                        # preserve checksum from existing info if present
+                        self.lot_checksum[lot_name] = existing.get("checksum", None)
                     except Exception:
                         logger.exception("Failed reading existing lot info %s", info_file)
             except Exception:
@@ -369,7 +383,8 @@ class LotControl(Control):
 
         # Try to accept either a TestData object or a legacy list of TestResult
         try:
-            ts = datetime.now().isoformat()
+            dtn = datetime.now()
+            ts = dtn.isoformat()
             results = getattr(test_data, "results", None)
             serial = getattr(test_data, "serial", None)
             print(f"LotControl: Sarjanumero {serial}")
@@ -416,7 +431,8 @@ class LotControl(Control):
         saved_any = False
         # create sample dir for this TestData
         serial_dir = str(serial) if serial else str(tid)
-        sample_dir = out_dir / serial_dir / str(tid)
+        ts_label = dtn.strftime("%d_%m_%y_%H-%M")
+        sample_dir = out_dir / serial_dir / f"{ts_label}_{tid}"
         print(f"LotControl: Saving TestData to {sample_dir}")
         sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -424,15 +440,28 @@ class LotControl(Control):
         results_meta_file = sample_dir / f"results_{serial}_{tid}.json"
         try:
             # Build a JSON-friendly representation
+            # Determine test spec checksum from SweepEvaluate if available
+            try:
+                se = getattr(self.app, "sweep_evaluate", None)
+                test_checksum_val = getattr(se, "test_checksum", None) if se is not None else None
+            except Exception:
+                test_checksum_val = None
+
             jt = {
                 "serial": serial,
                 "id": tid,
                 "timestamp": ts,
                 "meta": meta,
-                "passed": passed,   
+                "passed": passed,
                 "pcb_lot": pcb_lot,
+                "test_checksum": test_checksum_val,
                 "results": [],
             }
+            # Also attach checksum to the test_data instance where possible so CSV writer can access it
+            try:
+                setattr(test_data, "test_checksum", test_checksum_val)
+            except Exception:
+                pass
             for r in results:
                 tp = getattr(r, "tp", None)
                 tp_dict = None
@@ -468,9 +497,29 @@ class LotControl(Control):
             saved_s2 = FilesWindow.exportFileToDir(self, str(sample_dir), filename=f"{serial}_{tid}_s2p.s2p", nr_params=4)
             logger.info("Saved full S2P for TestData %s to %s", tid, saved_s2)
 
+            # Save screenshots from SweepEvaluate charts (if available on the app)
+            try:
+                se = getattr(self.app, "sweep_evaluate", None)
+                if se is not None:
+                    # S11 chart screenshot
+                    try:
+                        s11_path = sample_dir / f"S11_{serial}_{tid}.png"
+                        se.s11_chart.saveScreenshotTo(s11_path)
+                        logger.info("Saved S11 screenshot to %s", s11_path)
+                    except Exception:
+                        logger.exception("Failed saving S11 screenshot for TestData %s", tid)
+                    # S21 chart screenshot
+                    try:
+                        s21_path = sample_dir / f"S21_{serial}_{tid}.png"
+                        se.s21_chart.saveScreenshotTo(s21_path)
+                        logger.info("Saved S21 screenshot to %s", s21_path)
+                    except Exception:
+                        logger.exception("Failed saving S21 screenshot for TestData %s", tid)
+            except Exception:
+                logger.exception("Unexpected error while attempting to save chart screenshots for %s", tid)
+
         except Exception:
             logger.exception("Failed saving full S-parameter files for TestData %s", tid)
-    
         # update sample count and lot.json (stored at lot root)
         lot_name = self.current_lot_name
         if lot_name and saved_any:
@@ -491,6 +540,7 @@ class LotControl(Control):
                     "samples": int(self.lot_samples[lot_name]),
                     "passed": int(self.lot_passed[lot_name]),
                     "failed": int(self.lot_failed[lot_name]),
+                    "checksum": self.lot_checksum.get(lot_name, None),
                     "creation_date": datetime.now().isoformat(),
                 }
                 with info_file.open("w", encoding="utf-8") as f:
@@ -547,7 +597,7 @@ class LotControl(Control):
 
         # --- Unified header and row construction ---
         def _build_header_and_row():
-            top_fields = ["timestamp", "serial", "id", "meta", "passed", "pcb_lot"]
+            top_fields = ["timestamp", "serial", "id", "meta", "passed", "pcb_lot", "test_checksum"]
             # Always include top_fields; filters only apply to per-test attributes
             header_cols = top_fields.copy()
 
@@ -588,6 +638,17 @@ class LotControl(Control):
             row["meta"] = getattr(test_data, "meta", None)
             row["passed"] = getattr(test_data, "passed", None)
             row["pcb_lot"] = getattr(test_data, "pcb_lot", None)
+            # Prefer checksum present on TestData; otherwise fall back to the lot's checksum
+            try:
+                checksum = getattr(test_data, "test_checksum", None)
+            except Exception:
+                checksum = None
+            if checksum is None:
+                try:
+                    checksum = self.lot_checksum.get(self.current_lot_name) if getattr(self, "lot_checksum", None) is not None else None
+                except Exception:
+                    checksum = None
+            row["test_checksum"] = checksum
 
             # Fill per-test values
             seen_prefixes: dict[str, int] = {}
@@ -716,6 +777,26 @@ class LotControl(Control):
 
         # Append row in field order
         values = [row.get(fn, None) for fn in fieldnames]
+        # Convert timestamp string to an actual datetime for Excel compatibility
+        if "timestamp" in fieldnames:
+            try:
+                ti = fieldnames.index("timestamp")
+                ts_val = values[ti]
+                if isinstance(ts_val, str):
+                    try:
+                        # Prefer ISO format parsing
+                        ts_parsed = datetime.fromisoformat(ts_val)
+                    except Exception:
+                        try:
+                            ts_parsed = datetime.strptime(ts_val, "%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            ts_parsed = None
+                    if ts_parsed is not None:
+                        values[ti] = ts_parsed
+            except Exception:
+                # If anything goes wrong, leave the raw value as-is and continue
+                logger.exception("Failed converting timestamp to datetime for Excel: %s", p)
+
         try:
             wb = load_workbook(p)
             ws = wb.active

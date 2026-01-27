@@ -4,7 +4,7 @@ from PySide6.QtGui import QIcon
 from .about import Ui_DialogAbout
 from .main_rc import qInitResources
 
-WINDOW_ICON_RES = ":/window/icon_48x48.png"
+WINDOW_ICON_RES = ":/window/tester_icon_48x48.png"
 
 
 def get_window_icon() -> QIcon:

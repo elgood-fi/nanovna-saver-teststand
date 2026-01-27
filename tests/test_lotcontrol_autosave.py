@@ -29,6 +29,8 @@ def test_autosave_on_evaluate(tmp_path):
 
     se = SweepEvaluate(fake_app)
     lc = LotControl(fake_app)
+    # Ensure LotControl can access the SweepEvaluate charts by setting it on the fake app
+    fake_app.sweep_evaluate = se
 
     # Prepare lot directory and selection
     lot_dir = tmp_path / "lotA"
@@ -53,16 +55,19 @@ def test_autosave_on_evaluate(tmp_path):
     se.spec = TestSpec(sweep={}, tests=[tp])
     se.current_serial = "SN1"
 
-    # Run evaluation -> should emit and create TestData
+    # Set a test_checksum value on the spec and run evaluation -> should emit and create TestData
+    se.test_checksum = "deadbeef"
     se.evaluate()
 
     # Call save with the new TestData object
     lc.save_results_for_latest(se.test_data)
 
-    # Verify files saved under lot/<serial>/<id>/
+    # Verify files saved under lot/<serial>/<timestamp>_<id>/
     td = se.test_data
-    sample_dir = lot_dir / td.serial / td.id
-    assert sample_dir.exists(), "Expected sample directory to exist"
+    serial_dir = lot_dir / td.serial
+    sample_dirs = [d for d in serial_dir.iterdir() if d.is_dir() and d.name.endswith(f"_{td.id}")]
+    assert len(sample_dirs) == 1, f"Expected one sample dir ending with _{td.id} under {serial_dir}, found {len(sample_dirs)}"
+    sample_dir = sample_dirs[0]
 
     s1p_files = list(sample_dir.glob("*.s1p"))
     s2p_files = list(sample_dir.glob("*.s2p"))
@@ -80,8 +85,10 @@ def test_autosave_on_evaluate(tmp_path):
     # New: verify pcb_lot was set on the TestData and written to JSON
     assert getattr(td, "pcb_lot", None) == "LOT99"
     assert jd.get("pcb_lot") == "LOT99"
+    # New: verify test_checksum passed from SweepEvaluate was written into JSON
+    assert jd.get("test_checksum") == "deadbeef"
 
-    # Verify a per-lot CSV log was created and contains pcb_lot
+    # Verify a per-lot CSV log was created and contains pcb_lot and checksum
     csv_path = lot_dir / f"{lc.current_lot_name}_log.csv"
     assert csv_path.exists(), "Expected per-lot CSV log to exist"
     import csv as _csv
@@ -89,6 +96,13 @@ def test_autosave_on_evaluate(tmp_path):
         reader = _csv.DictReader(f)
         rows = list(reader)
     assert rows[0].get("pcb_lot") == "LOT99"
+    assert rows[0].get("test_checksum") == "deadbeef"
+
+    # Verify chart screenshots were saved into the sample directory
+    s11_png = sample_dir / f"{td.serial}_{td.id}_s11.png"
+    s21_png = sample_dir / f"{td.serial}_{td.id}_s21.png"
+    assert s11_png.exists(), f"Expected S11 screenshot {s11_png} to exist"
+    assert s21_png.exists(), f"Expected S21 screenshot {s21_png} to exist"
 
     # Verify lot.json sample count updated
     info_file = lot_dir / "lot.json"

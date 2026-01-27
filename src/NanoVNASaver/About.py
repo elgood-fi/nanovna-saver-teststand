@@ -22,6 +22,8 @@ from .utils import get_app_version
 VERSION = get_app_version()
 INFO_URL = "https://github.com/NanoVNA-Saver/nanovna-saver"
 INFO = f"""NanoVNASaver {VERSION}
+Test stand software for automated S11 and S21 acceptance measurements. 
+Built on top of NanoVNASaver: 
 
 Copyright (C) 2019, 2020 Rune B. Broberg
 Copyright (C) 2020ff NanoVNA-Saver Authors
@@ -30,6 +32,7 @@ This program comes with ABSOLUTELY NO WARRANTY
 This program is licensed under the GNU General Public License version 3
 
 See {INFO_URL} for further details.
+
 """
 
 TAGS_URL = "https://github.com/NanoVNA-Saver/nanovna-saver/tags"

@@ -160,7 +160,7 @@ class NanoVNASaver(QWidget):
 
         logger.debug("Building user interface")
 
-        self.baseTitle = f"NanoVNA Saver {NanoVNASaver.version}"
+        self.baseTitle = f"Filter test stand"
         self.updateTitle()
         layout = QtWidgets.QBoxLayout(
             QtWidgets.QBoxLayout.Direction.LeftToRight
@@ -298,7 +298,7 @@ class NanoVNASaver(QWidget):
         ###############################################################
         #  Sweep control
         ###############################################################
-        left_column.addWidget(self.calibration_control)
+        #left_column.addWidget(self.calibration_control)
         left_column.addWidget(self.lot_control)
         left_column.addWidget(self.sweep_control)
         self.sweep_control.setHidden(True)

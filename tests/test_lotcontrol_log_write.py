@@ -13,6 +13,8 @@ def _make_testdata():
     r1 = TestResult(tp=tp1, passed=True, min=-29.5, max=-25.0, failing=[], samples=10)
     r2 = TestResult(tp=tp2, passed=False, min=-8.0, max=0.0, failing=[1700000000], samples=5)
     td = TestData(serial="SN123", id="tid-1", meta="m", passed=False, pcb_lot="LOT42", results=[r1, r2])
+    # Add a test_checksum attribute (not part of TestData dataclass) to simulate SweepEvaluate checksum
+    setattr(td, "test_checksum", "abc123")
     return td
 
 
@@ -33,6 +35,38 @@ def test_log_write_csv(tmp_path: Path):
     # header should include prefixed fields for both test points
     assert any(k.startswith("TP_One_") or k.startswith("TP_One") for k in row.keys())
     assert any(k.startswith("TP_Two_") or k.startswith("TP_Two") for k in row.keys())
+    # header and row should include test_checksum
+    assert "test_checksum" in row
+    assert row.get("test_checksum") == "abc123"
+
+
+def test_log_write_uses_lot_checksum_when_testdata_missing(tmp_path: Path):
+    # Test that when TestData has no test_checksum, LotControl falls back to lot_checksum
+    td = _make_testdata()
+    # remove test_checksum attribute
+    try:
+        delattr(td, "test_checksum")
+    except Exception:
+        try:
+            del td.test_checksum
+        except Exception:
+            pass
+
+    csv_path = tmp_path / "lotX_log.csv"
+    # create a LotControl instance so fallback to lot_checksum works
+    class FakeApp:
+        pass
+
+    fake_app = FakeApp()
+    lc = LotControl(fake_app)
+    lc.current_lot_name = "lotX"
+    lc.lot_checksum["lotX"] = "lot-check"
+
+    lc.log_write(td, csv_path, filter=None, excel=False)
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert rows[0].get("test_checksum") == "lot-check"
 
 
 def test_log_write_csv_with_filter(tmp_path: Path):
@@ -63,8 +97,17 @@ def test_log_write_excel(tmp_path: Path):
     ws = wb.active
     header = [cell.value for cell in ws[1]]
     assert "serial" in header
+    # ensure checksum header present
+    assert "test_checksum" in header
     # first data row
     data_row = [cell.value for cell in ws[2]]
     # find serial column
     si = header.index("serial")
     assert data_row[si] == "SN123"
+    # find checksum column
+    ci = header.index("test_checksum")
+    assert data_row[ci] == "abc123"
+    # timestamp should be written as an Excel datetime object
+    ti = header.index("timestamp")
+    import datetime as _dt
+    assert isinstance(data_row[ti], _dt.datetime)

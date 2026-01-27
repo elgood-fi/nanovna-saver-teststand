@@ -24,6 +24,7 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Signal, Qt
 
 from .Control import Control
+from ..Windows.CalibrationSettings import CalibrationWindow
 
 if TYPE_CHECKING:
     from ..NanoVNASaver.NanoVNASaver import NanoVNASaver as vna_app
@@ -54,7 +55,7 @@ class CalibrationControl(Control):
         # Load button
         self.btn_load = QtWidgets.QPushButton("Load calibration")
         self.btn_load.setMinimumHeight(20)
-        self.btn_load.clicked.connect(self.load_calibration)
+        self.btn_load.clicked.connect(CalibrationWindow.loadCalibration())
         self.layout.addRow(self.btn_load)
     '''
     def loadCalibration(self):
@@ -84,6 +85,7 @@ class CalibrationControl(Control):
         '''
 
     def load_calibration(self):
+
         """Dummy handler: toggles status to indicate a calibration was loaded."""
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             filter="Calibration Files (*.cal);;All files (*.*)"
@@ -101,3 +103,4 @@ class CalibrationControl(Control):
         #    "background-color: #4CAF50; color: white; padding: 4px; border-radius: 4px;"
         #)
         self.calibration_loaded.emit(True)
+
