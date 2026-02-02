@@ -161,7 +161,7 @@ class NanoVNASaver(QWidget):
         logger.debug("Building user interface")
 
         self.baseTitle = f"Filter test stand"
-        self.updateTitle()
+        #self.updateTitle()
         layout = QtWidgets.QBoxLayout(
             QtWidgets.QBoxLayout.Direction.LeftToRight
         )
@@ -447,12 +447,16 @@ class NanoVNASaver(QWidget):
         #  Calibration
         ###############################################################
 
-        btnOpenCalibrationWindow = QtWidgets.QPushButton("Calibration ...")
-        btnOpenCalibrationWindow.setMinimumHeight(20)
+        # Calibration button is disabled until a device is connected
+        self.btnOpenCalibrationWindow = QtWidgets.QPushButton("Calibration ...")
+        self.btnOpenCalibrationWindow.setMinimumHeight(20)
+        self.btnOpenCalibrationWindow.setDisabled(True)
         self.calibrationWindow = CalibrationWindow(self)
-        btnOpenCalibrationWindow.clicked.connect(
+        self.btnOpenCalibrationWindow.clicked.connect(
             lambda: self.display_window("calibration")
         )
+        # Enable/disable calibration button when serial connection changes
+        self.serial_control.connected.connect(self.btnOpenCalibrationWindow.setEnabled)
 
         ###############################################################
         #  Display setup
@@ -476,7 +480,7 @@ class NanoVNASaver(QWidget):
 
         button_grid = QtWidgets.QGridLayout()
         button_grid.addWidget(btn_open_file_window, 0, 0)
-        button_grid.addWidget(btnOpenCalibrationWindow, 0, 1)
+        button_grid.addWidget(self.btnOpenCalibrationWindow, 0, 1)
         button_grid.addWidget(btn_display_setup, 1, 0)
         button_grid.addWidget(btn_about, 1, 1)
         left_column.addLayout(button_grid)
@@ -606,7 +610,7 @@ class NanoVNASaver(QWidget):
             self.s21_min_gain_label.setText("")
             self.s21_max_gain_label.setText("")
         '''
-        self.updateTitle()
+        #self.updateTitle()
         self.communicate.data_available.emit()
 
     def sweepFinished(self):
@@ -643,7 +647,7 @@ class NanoVNASaver(QWidget):
         self.btnResetReference.setDisabled(False)
 
         self.referenceSource = source or self.sweepSource
-        self.updateTitle()
+        #self.updateTitle()
 
     def updateTitle(self):
         insert = "("
@@ -664,7 +668,7 @@ class NanoVNASaver(QWidget):
     def resetReference(self):
         self.ref_data = Touchstone()
         self.referenceSource = ""
-        self.updateTitle()
+        #self.updateTitle()
         for c in self.subscribing_charts:
             c.resetReference()
         self.btnResetReference.setDisabled(True)

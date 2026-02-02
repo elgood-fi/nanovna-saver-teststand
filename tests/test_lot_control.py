@@ -56,3 +56,17 @@ def test_scan_populates_from_directory(tmp_path):
             found = True
             assert lc.table.item(r, 1).text() == "5"
     assert found
+
+
+def test_set_pcb_lot_indicator_preserved(tmp_path):
+    lc = LotControl(None)
+    # Set input text and press Set
+    lc.pcb_lot_field.setText("LOT-XYZ")
+    lc._on_set_pcb_lot()
+    assert lc.pcb_lot_value == "LOT-XYZ"
+    assert lc.pcb_lot_indicator.text() == "LOT-XYZ"
+    # Add and select a lot, the PCB lot should remain
+    lc.add_lot("lotA", None, samples=0, create_on_disk=False)
+    lc.set_lot_selected("lotA", lc.lots["lotA"])
+    assert lc.pcb_lot_value == "LOT-XYZ"
+    assert lc.pcb_lot_indicator.text() == "LOT-XYZ"

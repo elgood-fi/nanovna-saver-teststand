@@ -75,8 +75,16 @@ class LogMagChart(FrequencyChart):
         self.calc_scaling()
         self.draw_grid(qp)
 
-        self.drawData(qp, self.data, Chart.color.sweep)
+        # Draw golden reference behind the current sweep (light gray)
+        if getattr(self, "golden_reference", None):
+            try:
+                self.drawData(qp, self.golden_reference, Chart.color.golden)
+            except Exception:
+                pass
+
+        # Draw any stored reference and then the current sweep on top
         self.drawData(qp, self.reference, Chart.color.reference)
+        self.drawData(qp, self.data, Chart.color.sweep)
         self.drawMarkers(qp)
 
     def calc_scaling(self) -> None:
@@ -103,6 +111,21 @@ class LogMagChart(FrequencyChart):
                     continue
                 max_val = max(max_val, logmag)
                 min_val = min(min_val, logmag)
+
+            # Also include golden reference sweep in scaling
+            try:
+                for d in self.golden_reference:
+                    if d.freq < self.fstart or d.freq > self.fstop:
+                        continue
+                    logmag = self.logMag(d)
+                    if math.isinf(logmag):
+                        continue
+                    max_val = max(max_val, logmag)
+                    min_val = min(min_val, logmag)
+            except Exception:
+                # graceful if golden_reference not present
+                pass
+
             minValue = 10 * math.floor(min_val / 10)
             maxValue = 10 * math.ceil(max_val / 10)
 

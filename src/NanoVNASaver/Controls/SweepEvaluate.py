@@ -131,6 +131,19 @@ class SweepEvaluate(Control):
         # Use LogMagTest so the charts can render TestSpec markers
         self.s11_chart = LogMagTest("S11 Return Loss")
         self.s21_chart = LogMagTest("S21 Insertion Loss")
+
+        # If a golden reference already exists on the application, show it
+        try:
+            if hasattr(self.app, "golden_ref_data") and self.app.golden_ref_data:
+                self.s11_chart.setGoldenReference(self.app.golden_ref_data.s11)
+                self.s21_chart.setGoldenReference(self.app.golden_ref_data.s21)
+                # Update label to reflect presence
+                try:
+                    self.golden_label.setText("Golden reference loaded")
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("Failed to initialize golden reference on charts")
     
         # Create a horizontal layout for the charts arranged side by side
         charts_layout = QtWidgets.QHBoxLayout()
@@ -151,6 +164,9 @@ class SweepEvaluate(Control):
             # Update when PCB lot field changes
             if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "pcb_lot_field"):
                 self.app.lot_control.pcb_lot_field.textChanged.connect(self.update_test_button_state)
+            # Update when a PCB lot is explicitly set via the 'Set' button
+            if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "pcb_lot_changed"):
+                self.app.lot_control.pcb_lot_changed.connect(self.update_test_button_state)
             # Update when lot selection changes
             if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "lot_changed"):
                 self.app.lot_control.lot_changed.connect(self.update_test_button_state)
@@ -172,6 +188,12 @@ class SweepEvaluate(Control):
         # Initial state update
         try:
             self.update_test_button_state()
+        except Exception:
+            pass
+
+        # Install event filter to allow Enter/Return key to act as an alias for the Test button
+        try:
+            self.installEventFilter(self)
         except Exception:
             pass
 
@@ -253,21 +275,38 @@ class SweepEvaluate(Control):
         status_display.addRow(cal_row) 
         '''
 
-        btn_golden= QtWidgets.QPushButton("Test golden sample")
-        btn_golden.setFixedHeight(40)
-        btn_golden_set= QtWidgets.QPushButton("Set as reference")
-        btn_golden_set.setFixedHeight(40)
+        self.btn_golden = QtWidgets.QPushButton("Test golden sample")
+        self.btn_golden.setFixedHeight(40)
+        # Disable until prerequisites are met (same behavior as Test button)
+        self.btn_golden.setEnabled(False)
+        # 'Set as reference' disabled until a golden candidate exists
+        self.btn_golden_set = QtWidgets.QPushButton("Set as reference")
+        self.btn_golden_set.setFixedHeight(40)
+        self.btn_golden_set.setEnabled(False)
         middle_top_row = QtWidgets.QVBoxLayout()
 
         middle_top_row.addWidget(self.golden_title)
         middle_top_row.addWidget(self.golden_label)
         
         middle_bot_row = QtWidgets.QHBoxLayout()
-        middle_bot_row.addWidget(btn_golden)
-        middle_bot_row.addWidget(btn_golden_set)
+        middle_bot_row.addWidget(self.btn_golden)
+        middle_bot_row.addWidget(self.btn_golden_set)
 
         middle_column.addRow(middle_top_row)
         middle_column.addRow(middle_bot_row)
+
+        # Golden sample flow state
+        self._golden_mode = False  # Set True when a golden sample test is started
+        self._golden_candidate_available = False
+        self._last_golden_s11 = None
+        self._last_golden_s21 = None
+
+        # Wire up golden buttons
+        try:
+            self.btn_golden.clicked.connect(self._on_test_golden_clicked)
+        except Exception:
+            pass
+        self.btn_golden_set.clicked.connect(self._on_set_golden_clicked) 
 
 
         right_column = QtWidgets.QFormLayout()
@@ -351,6 +390,11 @@ class SweepEvaluate(Control):
             QtWidgets.QMessageBox.warning(self, "Error", "Failed to load test spec")
             return
         self.spec = spec
+        sweep = self.spec.sweep
+        start = int(sweep.get("start", 0)) if sweep else 0
+        stop = int(sweep.get("stop", 0)) if sweep else 0
+        points = int(sweep.get("points", self.app.sweep.points)) if sweep else self.app.sweep.points
+        segments = int(sweep.get("segments", self.app.sweep.segments)) if sweep else self.app.sweep.segments
         # compute md5 checksum of the file and store
         try:
             import hashlib as _hashlib
@@ -359,8 +403,9 @@ class SweepEvaluate(Control):
                 self.test_checksum = _hashlib.md5(_f.read()).hexdigest()
         except Exception:
             self.test_checksum = None
-        self.spec_label.setText(f"{str(Path(path).name)} - {self.test_checksum[:8] if self.test_checksum else 'no checksum'}")
+        self.spec_label.setText(f"{str(Path(path).name)} - {self.test_checksum[:8] if self.test_checksum else 'no checksum'}: [{format_frequency_short(start)} - {format_frequency_short(stop)}]  [{points}*{segments} = {points*segments} pts]")
         self.populate_table()
+        self.app.updateTitle()
         # Pass filtered spec to the charts so they can draw markers for their
         # respective parameters (s11/s21)
         from ..TestSpec import TestSpec as _TS
@@ -466,6 +511,26 @@ class SweepEvaluate(Control):
             pcb_lot="",
             results=self.latest_result
         )   
+        # If this test was run as a golden candidate, store the raw sweep data for later promotion
+        if getattr(self, "_golden_mode", False):
+            try:
+                self._last_golden_s11 = list(s11)
+                self._last_golden_s21 = list(s21)
+                self._last_golden_pass = overall_pass
+                self._golden_candidate_available = True
+                # Update label to indicate a golden candidate is available
+                self.golden_label.setText(f"Candidate: {self.current_serial} - {'PASS' if overall_pass else 'FAIL'}")
+                # Enable 'Set as reference' button now that a candidate exists
+                try:
+                    self.btn_golden_set.setEnabled(True)
+                except Exception:
+                    pass
+            except Exception:
+                logger.exception("Failed storing golden candidate")
+            finally:
+                # Clear golden mode - candidate has been produced
+                self._golden_mode = False
+
         # Update overall status panel based on results
         if overall_pass:
             self._last_result_state = "PASS"
@@ -501,6 +566,7 @@ class SweepEvaluate(Control):
             self.app.sweep_control.set_end(stop)
             self.app.sweep_control.set_span(span)
             self.app.sweep_control.set_segments(segments)
+           
         except Exception:
             # Non-fatal if UI not present
             logger.exception("Could not update sweep control UI")
@@ -588,6 +654,56 @@ class SweepEvaluate(Control):
         except Exception:
             logger.exception("Failed to start sweep")
 
+    def _on_test_golden_clicked(self):
+        """Start a test intended for the golden sample. After the test finishes the
+        result can be saved as the golden reference by pressing "Set as reference".
+        """
+        self._golden_mode = True
+        self.golden_label.setText("Waiting for golden test...")
+        # Ensure 'Set as reference' is disabled until a candidate is produced
+        try:
+            self.btn_golden_set.setEnabled(False)
+        except Exception:
+            pass
+        # Reuse the normal test flow (prompts for serial etc.)
+        self._on_test_button_clicked()
+
+    def _on_set_golden_clicked(self):
+        """Persist the last golden candidate sweep as the golden reference and
+        update charts to display it behind current sweeps."""
+        if not self._golden_candidate_available:
+            QtWidgets.QMessageBox.information(self, "Info", "No golden sample result available to set as reference")
+            return
+        try:
+            import datetime
+            from ..Touchstone import Touchstone
+            # Ensure app has a golden_ref_data holder
+            try:
+                self.app.golden_ref_data = getattr(self.app, "golden_ref_data", None) or Touchstone()
+            except Exception:
+                self.app.golden_ref_data = Touchstone()
+            # Store the last golden candidate into the app-level golden reference
+            self.app.golden_ref_data.s11 = list(self._last_golden_s11)
+            self.app.golden_ref_data.s21 = list(self._last_golden_s21)
+            # Update the golden label with serial and pass state
+            status = "PASS" if self._last_golden_pass else "FAIL"
+            self.golden_label.setText(f"{self.current_serial} - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            # Push to charts
+            try:
+                self.s11_chart.setGoldenReference(self.app.golden_ref_data.s11)
+                self.s21_chart.setGoldenReference(self.app.golden_ref_data.s21)
+            except Exception:
+                logger.exception("Failed to update charts with golden reference")
+            QtWidgets.QMessageBox.information(self, "Golden set", "Golden sample saved as reference")
+            # Candidate consumed: disable the button until a new golden test is run
+            self._golden_candidate_available = False
+            try:
+                self.btn_golden_set.setEnabled(False)
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Failed setting golden reference")
+
     def update_test_button_state(self, *args) -> None:
         """Enable the Test button only when all preconditions are met:
         - PCB lot field is non-empty
@@ -602,12 +718,11 @@ class SweepEvaluate(Control):
             vna_ok = False
             lot_ok = False
 
-            # PCB lot field
+            # PCB lot set via the 'Set' button (must have been explicitly set)
             try:
-                pcb_text = ""
-                if hasattr(self.app, "lot_control") and hasattr(self.app.lot_control, "pcb_lot_field"):
-                    pcb_text = str(self.app.lot_control.pcb_lot_field.text()).strip()
-                pcb_ok = bool(pcb_text)
+                pcb_ok = False
+                if hasattr(self.app, "lot_control"):
+                    pcb_ok = getattr(self.app.lot_control, "pcb_lot_value", None) is not None
             except Exception:
                 pcb_ok = False
 
@@ -655,6 +770,13 @@ class SweepEvaluate(Control):
                 self.btn_test.setToolTip(tooltip)
             except Exception:
                 pass
+            try:
+                # Mirror Test button behavior for the golden test button when available
+                if hasattr(self, 'btn_golden'):
+                    self.btn_golden.setEnabled(enabled)
+                    self.btn_golden.setToolTip(tooltip)
+            except Exception:
+                pass
         except Exception:
             logger.exception("Failed to update Test button state")
 
@@ -667,6 +789,26 @@ class SweepEvaluate(Control):
             )
         except Exception:
             pass
+
+    def eventFilter(self, obj, event):
+        """Intercept key press events and treat Enter/Return as alias for the Test button."""
+        try:
+            # Use QtCore event type and key constants
+            if event.type() == QtCore.QEvent.KeyPress:
+                key = event.key()
+                if key in (Qt.Key_Return, Qt.Key_Enter):
+                    # Only trigger test if button is enabled
+                    try:
+                        if getattr(self, "btn_test", None) and self.btn_test.isEnabled():
+                            # Call same handler as button click
+                            self._on_test_button_clicked()
+                            return True
+                    except Exception:
+                        pass
+        except Exception:
+            logger.exception("eventFilter error")
+        # fall back to default processing
+        return super().eventFilter(obj, event)
 
     def _on_worker_updated(self):
         # Called frequently while sweeping; show Testing when worker is active

@@ -97,6 +97,7 @@ class CalibrationWindow(QtWidgets.QWidget):
             self.cal_label[label_name] = QtWidgets.QLabel("Uncalibrated")
             cal_btn[label_name] = QtWidgets.QPushButton(label_name.capitalize())
             cal_btn[label_name].setMinimumHeight(20)
+            cal_btn[label_name].setDisabled(True)
             cal_btn[label_name].clicked.connect(
                 partial(self.manual_save, label_name)
             )
@@ -111,6 +112,7 @@ class CalibrationWindow(QtWidgets.QWidget):
         self.input_offset_delay.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
         self.input_offset_delay.valueChanged.connect(self.setOffsetDelay)
         self.input_offset_delay.setRange(-10e6, 10e6)
+        self.input_offset_delay.setDisabled(True)
 
         calibration_control_layout.addRow(QtWidgets.QLabel(""))
         calibration_control_layout.addRow(
@@ -119,6 +121,7 @@ class CalibrationWindow(QtWidgets.QWidget):
 
         self.btn_automatic = QtWidgets.QPushButton("Calibration assistant")
         self.btn_automatic.setMinimumHeight(20)
+        self.btn_automatic.setDisabled(True)
         calibration_control_layout.addRow(self.btn_automatic)
         self.btn_automatic.clicked.connect(self.automaticCalibration)
 

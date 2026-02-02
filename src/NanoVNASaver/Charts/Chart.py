@@ -49,6 +49,10 @@ class ChartColors:  # pylint: disable=too-many-instance-attributes
     sweep_secondary: QColor = field(
         default_factory=lambda: QColor(QColorConstants.DarkMagenta)
     )
+    # Color used to draw golden sample reference behind the sweep (light gray)
+    golden: QColor = field(
+        default_factory=lambda: QColor(192, 192, 192, 160)
+    )
     swr: QColor = field(default_factory=lambda: QColor(255, 0, 0, 128))
     text: QColor = field(default_factory=lambda: QColor(QColorConstants.Black))
     bands: QColor = field(default_factory=lambda: QColor(128, 128, 128, 48))
@@ -139,6 +143,8 @@ class Chart(QtWidgets.QWidget):
 
         self.data: list[Datapoint] = []
         self.reference: list[Datapoint] = []
+        # golden_reference stores the golden sample sweep (displayed behind current sweep)
+        self.golden_reference: list[Datapoint] = []
 
         self.markers: list[Marker] = []
         self.swrMarkers: set[float] = set()
@@ -161,6 +167,15 @@ class Chart(QtWidgets.QWidget):
 
     def resetReference(self) -> None:
         self.reference = []
+        self.update()
+
+    def setGoldenReference(self, data) -> None:
+        """Set the golden sample reference (drawn behind the sweep)."""
+        self.golden_reference = data
+        self.update()
+
+    def resetGoldenReference(self) -> None:
+        self.golden_reference = []
         self.update()
 
     def setData(self, data) -> None:
@@ -331,6 +346,7 @@ class Chart(QtWidgets.QWidget):
         new_chart = self.__class__(self.name)
         new_chart.data = self.data
         new_chart.reference = self.reference
+        new_chart.golden_reference = self.golden_reference
         new_chart.dim = replace(self.dim)
         new_chart.flag = replace(self.flag)
         new_chart.markers = self.markers

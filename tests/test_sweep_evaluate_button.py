@@ -29,8 +29,23 @@ class FakeVNA:
 class FakeLot:
     def __init__(self):
         self.pcb_lot_field = QtWidgets.QLineEdit()
+        # Simulate an explicitly set PCB lot value (None until 'Set' is used)
+        self.pcb_lot_value = None
         # Simulate currently selected lot name (None when not selected)
         self.current_lot_name = None
+        # Minimal signal-like helper so tests can emulate emission
+        class _Sig:
+            def __init__(self):
+                self._cbs = []
+            def connect(self, cb):
+                self._cbs.append(cb)
+            def emit(self):
+                for cb in list(self._cbs):
+                    try:
+                        cb()
+                    except Exception:
+                        pass
+        self.pcb_lot_changed = _Sig()
 
 
 def test_test_button_disabled_when_lot_not_selected_even_if_others_ok():
@@ -40,7 +55,7 @@ def test_test_button_disabled_when_lot_not_selected_even_if_others_ok():
     se = SweepEvaluate(app)
 
     # PCB lot set, spec loaded, cal valid, vna connected, but no lot selected -> disabled
-    app.lot_control.pcb_lot_field.setText("LOT-1")
+    app.lot_control.pcb_lot_value = "LOT-1"
     se.spec = TestSpec(sweep={}, tests=[])
     app.lot_control.current_lot_name = None
 
@@ -73,13 +88,40 @@ def test_test_button_enabled_when_all_conditions_met():
 
     se = SweepEvaluate(app)
 
-    # Set pcb lot
-    app.lot_control.pcb_lot_field.setText("LOT-123")
+    # Set pcb lot (must be explicitly set via 'Set')
+    app.lot_control.pcb_lot_value = "LOT-123"
     # Load a dummy spec
     se.spec = TestSpec(sweep={}, tests=[])
 
     se.update_test_button_state()
     assert se.btn_test.isEnabled()
+
+
+def test_enter_key_triggers_test_button(monkeypatch):
+    ensure_qapp()
+    app = FakeApp(cal_valid=True, vna_connected=True)
+    se = SweepEvaluate(app)
+
+    # Ensure button is enabled
+    app.lot_control.pcb_lot_value = "LOT-1"
+    se.spec = TestSpec(sweep={}, tests=[])
+    se.update_test_button_state()
+    assert se.btn_test.isEnabled()
+
+    # Replace the handler with a simple marker so the dialog isn't shown
+    called = {"ok": False}
+
+    def fake_start():
+        called["ok"] = True
+
+    monkeypatch.setattr(se, "_on_test_button_clicked", fake_start)
+
+    # Send Return key event to the widget
+    evt = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, Qt.Key_Return, QtCore.Qt.NoModifier)
+    QtWidgets.QApplication.sendEvent(se, evt)
+    QtWidgets.QApplication.processEvents()
+
+    assert called["ok"] is True
 
 
 def test_load_spec_assigns_tests_to_charts(tmp_path):
@@ -106,3 +148,21 @@ def test_load_spec_assigns_tests_to_charts(tmp_path):
     assert se.s21_chart.testspec is not None
     assert len(se.s21_chart.testspec.tests) == 1
     assert se.s21_chart.testspec.tests[0].parameter.lower() == "s21"
+
+
+def test_pcb_lot_set_signal_enables_button():
+    ensure_qapp()
+    app = FakeApp(cal_valid=True, vna_connected=True)
+    se = SweepEvaluate(app)
+
+    # Spec loaded and lot selected, but pcb not explicitly set -> disabled
+    se.spec = TestSpec(sweep={}, tests=[])
+    app.lot_control.current_lot_name = "lot1"
+    app.lot_control.pcb_lot_value = None
+    se.update_test_button_state()
+    assert not se.btn_test.isEnabled()
+
+    # Now set the value and emit the signal that the control would emit when pressing 'Set'
+    app.lot_control.pcb_lot_value = "LOTX"
+    app.lot_control.pcb_lot_changed.emit()
+    assert se.btn_test.isEnabled()

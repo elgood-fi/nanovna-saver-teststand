@@ -19,6 +19,7 @@
 
 import logging
 from pathlib import Path
+from statistics import mode
 from typing import TYPE_CHECKING, Optional
 import json
 from datetime import datetime
@@ -41,6 +42,8 @@ class LotControl(Control):
     """Dummy Lot control with a path field, serial label and a scrollable list of serials and statuses."""
 
     lot_changed = Signal(bool)
+    # Emitted when the PCB lot is explicitly set via the 'Set' button
+    pcb_lot_changed = Signal()
 
     def __init__(self, app: "vna_app"):
         super().__init__(app, "Lot control")
@@ -53,11 +56,19 @@ class LotControl(Control):
         self.lot_samples: dict[str, int] = {}
         self.lot_passed: dict[str, int] = {}
         self.lot_failed: dict[str, int] = {}
+        # Per-lot unit tracking: list of [serial, passed(bool)]
+        # Stored on disk as a JSON list of pairs, e.g. [["SN1", true], ["SN2", false]]
+        self.lot_units: dict[str, list] = {}
+        # Counts derived from lot_units
+        self.lot_passed_units: dict[str, int] = {}
+        self.lot_failed_units: dict[str, int] = {}
         # Per-lot test spec checksum (value of SweepEvaluate.test_checksum at creation)
         self.lot_checksum: dict[str, str | None] = {}
         self.highlighted_row: int | None = None
         # PCB lot field state: True if the PCB Lot text field is empty
         self.pcb_lot_empty: bool = True
+        # Stored PCB lot value set via the 'Set' button; displayed in the PCB lot indicator
+        self.pcb_lot_value: str | None = None
 
         # Working directory for new lots / defaults
         self.working_directory: Path = Path.cwd()
@@ -73,6 +84,29 @@ class LotControl(Control):
         )
         self.layout.addRow(QtWidgets.QLabel("Current lot"))
         self.layout.addRow(self.lot_label)  # spacer
+
+        # Yield label: percentage display for the currently selected lot (same styling as current lot)
+        self.yield_label = QtWidgets.QLabel("N/A")
+        self.yield_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.yield_label.setMinimumHeight(24)
+        self.yield_label.setAlignment(Qt.AlignCenter)
+        self.yield_label.setStyleSheet(
+            "padding: 1px; border-radius: 4px; border: 2px solid #666; font-size: 18px;"
+        )
+        self.layout.addRow(QtWidgets.QLabel("Yield"))
+        self.layout.addRow(self.yield_label)
+
+        # PCB Lot indicator: shows the currently set PCB lot (via the Set button)
+        self.pcb_lot_indicator = QtWidgets.QLabel("N/A")
+        self.pcb_lot_indicator.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.pcb_lot_indicator.setMinimumHeight(24)
+        self.pcb_lot_indicator.setAlignment(Qt.AlignCenter)
+        self.pcb_lot_indicator.setStyleSheet(
+            "padding: 1px; border-radius: 4px; border: 2px solid #666; font-size: 18px;"
+        )
+        self.layout.addRow(QtWidgets.QLabel("PCB Lot"))
+        self.layout.addRow(self.pcb_lot_indicator)
+
         # Samples label: plain numeric display for the currently selected lot
         self.samples_label = QtWidgets.QLabel("0")
         self.samples_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -94,14 +128,24 @@ class LotControl(Control):
         #self.serial_label = QtWidgets.QLabel("#N/A")
         #self.layout.addRow("Current serial:", self.serial_label)
 
-        # PCB Lot input field
+        # PCB Lot input field (with 'Set' button to store a persistent PCB lot indicator)
         self.pcb_lot_field = QtWidgets.QLineEdit()
         self.pcb_lot_field.setPlaceholderText("Enter PCB lot number")
         self.pcb_lot_field.setMinimumHeight(24)
-        self.layout.addRow("PCB Lot:", self.pcb_lot_field)
+        # Row with input + Set button
+        pcb_row = QtWidgets.QWidget()
+        pcb_row_layout = QtWidgets.QHBoxLayout()
+        pcb_row_layout.setContentsMargins(0, 0, 0, 0)
+        pcb_row.setLayout(pcb_row_layout)
+        pcb_row_layout.addWidget(self.pcb_lot_field)
+        self.btn_set_pcb_lot = QtWidgets.QPushButton("Set")
+        self.btn_set_pcb_lot.setMinimumHeight(24)
+        pcb_row_layout.addWidget(self.btn_set_pcb_lot)
+        self.layout.addRow("PCB Lot:", pcb_row)
         # Ensure internal state tracks the field (default is empty)
         self.pcb_lot_empty = True
         self.pcb_lot_field.textChanged.connect(self._on_pcb_lot_changed)
+        self.btn_set_pcb_lot.clicked.connect(self._on_set_pcb_lot) 
 
         # Table for lots (Lot name + number of samples)
         self.table = QtWidgets.QTableWidget(0, 2)
@@ -159,11 +203,17 @@ class LotControl(Control):
         failed = self.lot_failed.get(lot_name, 0)
         self.passed_label.setText(str(passed))
         self.failed_label.setText(str(failed))
+        # Compute and display yield as percentage with two decimals
+        try:
+            total = passed + failed
+            yield_pct = (float(passed) / total * 100.0) if total else 0.0
+        except Exception:
+            yield_pct = 0.0
+        if hasattr(self, "yield_label"):
+            self.yield_label.setText(f"{yield_pct:.2f}%")
         #self.serial_label.setText("#N/A")
-        # Clear PCB lot field when selecting a lot
-        if hasattr(self, "pcb_lot_field"):
-            self.pcb_lot_field.setText("")
-        self.pcb_lot_empty = True
+        # Preserve PCB lot indicator and input when selecting a different lot
+        # (Do not clear PCB lot set by the user)
         self.btn_open.setEnabled(True)
         self.btn_select.setEnabled(False)
         # visually select the row
@@ -206,11 +256,24 @@ class LotControl(Control):
                 with info_file.open("r", encoding="utf-8") as f:
                     info = json.load(f)
                 samples = int(info.get("samples", 0))
-                passed = int(info.get("passed", 0))
-                failed = int(info.get("failed", 0))
+                units = info.get("units", []) if isinstance(info.get("units", []), list) else []
+                passed_units = int(info.get("passed_units", info.get("passed", 0)))
+                failed_units = int(info.get("failed_units", info.get("failed", 0)))
+                if units and ("passed_units" not in info or "failed_units" not in info):
+                    p = sum(1 for u in units if bool(u[1]))
+                    f = len(units) - p
+                    passed_units = p
+                    failed_units = f
                 self.lot_samples[lot_name] = samples
-                self.lot_passed[lot_name] = passed
-                self.lot_failed[lot_name] = failed
+                # Keep legacy names for UI compatibility
+                self.lot_passed[lot_name] = int(passed_units)
+                self.lot_failed[lot_name] = int(failed_units)
+                # Store new structures
+                self.lot_passed_units[lot_name] = int(passed_units)
+                self.lot_failed_units[lot_name] = int(failed_units)
+                self.lot_units[lot_name] = list(units)
+                # preserve checksum from disk if present
+                self.lot_checksum[lot_name] = info.get("checksum", None)
             except Exception:
                 logger.exception("Failed reading lot info for %s", lot_name)
         self.set_lot_selected(lot_name, lot_path)
@@ -268,23 +331,42 @@ class LotControl(Control):
                     ):
                         info_file = candidate
                         samples = int(info.get("samples", 0))
-                        passed = int(info.get("passed", 0))
-                        failed = int(info.get("failed", 0))
+                        # Units list stored as list of [serial, passed_bool]
+                        units = info.get("units", []) if isinstance(info.get("units", []), list) else []
+                        # Prefer explicit passed_units/failed_units when available, else fall back to legacy fields
+                        passed_units = int(info.get("passed_units", info.get("passed", 0)))
+                        failed_units = int(info.get("failed_units", info.get("failed", 0)))
+                        # If units present and explicit counts not provided, infer counts from units
+                        if units and ("passed_units" not in info or "failed_units" not in info):
+                            p = sum(1 for u in units if bool(u[1]))
+                            f = len(units) - p
+                            passed_units = p
+                            failed_units = f
+                        # preserve checksum from disk if present
+                        self.lot_checksum[child.name] = info.get("checksum", None)
                         # add lot without creating on disk
-                        self.add_lot(child.name, str(child), samples=samples, passed=passed, failed=failed, create_on_disk=False)
+                        self.add_lot(child.name, str(child), samples=samples, passed_units=passed_units, failed_units=failed_units, units=units, create_on_disk=False)
                         break
                 except Exception:
                     logger.exception("Invalid lot json at %s", candidate)
                     continue
 
-    def add_lot(self, lot_name: str, path: str | None = None, *, samples: int = 0, passed: int = 0, failed: int = 0, create_on_disk: bool = True) -> None:
+    def add_lot(self, lot_name: str, path: str | None = None, *, samples: int = 0, passed_units: int = 0, failed_units: int = 0, units: list | None = None, create_on_disk: bool = True) -> None:
         """Add a lot entry to the table (name + sample count).
 
         If create_on_disk is True, this will create a directory in self.working_directory
         and write a `{lot_name}.json` file with the lot metadata (if it does not already exist).
+
+        New JSON fields supported:
+        - "passed_units": number of uniquely passing units (int)
+        - "failed_units": number of uniquely failing units (int)
+        - "units": list of [serial, passed_bool] entries
+        - "yield": float (passed_units / len(units), 0.0 when no units)
         """
         # Determine directory
         lot_dir = Path(path) if path else (self.working_directory / lot_name)
+        if units is None:
+            units = []
         if create_on_disk:
             try:
                 lot_dir.mkdir(parents=True, exist_ok=True)
@@ -300,8 +382,11 @@ class LotControl(Control):
                     info = {
                         "lot_name": lot_name,
                         "samples": int(samples),
-                        "passed": int(passed),
-                        "failed": int(failed),
+                        # Use new field names for unit counts
+                        "passed_units": int(passed_units),
+                        "failed_units": int(failed_units),
+                        "units": list(units),
+                        "yield": (float(passed_units) / len(units)) if len(units) else 0.0,
                         "checksum": checksum_val,
                         "creation_date": datetime.now().isoformat(),
                     }
@@ -315,8 +400,10 @@ class LotControl(Control):
                         with info_file.open("r", encoding="utf-8") as f:
                             existing = json.load(f)
                         samples = int(existing.get("samples", samples))
-                        passed = int(existing.get("passed", passed))
-                        failed = int(existing.get("failed", failed))
+                        # Prefer new field names when present
+                        passed_units = int(existing.get("passed_units", existing.get("passed", passed_units)))
+                        failed_units = int(existing.get("failed_units", existing.get("failed", failed_units)))
+                        units = existing.get("units", units) or units
                         # preserve checksum from existing info if present
                         self.lot_checksum[lot_name] = existing.get("checksum", None)
                     except Exception:
@@ -328,8 +415,13 @@ class LotControl(Control):
         if lot_name in self.lots:
             self.lots[lot_name] = str(lot_dir)
             self.lot_samples[lot_name] = int(samples)
-            self.lot_passed[lot_name] = int(passed)
-            self.lot_failed[lot_name] = int(failed)
+            # keep compatibility with existing naming used by UI
+            self.lot_passed[lot_name] = int(passed_units)
+            self.lot_failed[lot_name] = int(failed_units)
+            # store units list
+            self.lot_units[lot_name] = list(units)
+            self.lot_passed_units[lot_name] = int(passed_units)
+            self.lot_failed_units[lot_name] = int(failed_units)
             # update table row for samples
             for r in range(self.table.rowCount()):
                 if self.table.item(r, 0).text() == lot_name:
@@ -346,8 +438,13 @@ class LotControl(Control):
 
         self.lots[lot_name] = str(lot_dir)
         self.lot_samples[lot_name] = int(samples)
-        self.lot_passed[lot_name] = int(passed)
-        self.lot_failed[lot_name] = int(failed)
+        # keep compatibility with existing naming used by UI
+        self.lot_passed[lot_name] = int(passed_units)
+        self.lot_failed[lot_name] = int(failed_units)
+        # store units list
+        self.lot_units[lot_name] = list(units)
+        self.lot_passed_units[lot_name] = int(passed_units)
+        self.lot_failed_units[lot_name] = int(failed_units)
         samples_item = QtWidgets.QTableWidgetItem(str(self.lot_samples[lot_name]))
         samples_item.setFlags(samples_item.flags() ^ QtCore.Qt.ItemIsEditable)
         self.table.setItem(row, 1, samples_item)
@@ -355,6 +452,26 @@ class LotControl(Control):
     def _on_pcb_lot_changed(self, text: str) -> None:
         """Update internal state tracking whether PCB Lot field is empty."""
         self.pcb_lot_empty = (text.strip() == "")
+
+    def _on_set_pcb_lot(self) -> None:
+        """Set PCB lot indicator from the input field and preserve it across lot changes."""
+        try:
+            text = self.pcb_lot_field.text().strip()
+            if not text:
+                QtWidgets.QMessageBox.warning(self, "Invalid PCB lot", "No PCB lot entered")
+                return
+            self.pcb_lot_value = text
+            if hasattr(self, "pcb_lot_indicator"):
+                self.pcb_lot_indicator.setText(text)
+            # Mark input as non-empty now that a value has been set
+            self.pcb_lot_empty = False
+            # Notify listeners that a PCB lot has been explicitly set
+            try:
+                self.pcb_lot_changed.emit()
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Failed setting PCB lot")
 
     def _on_item_clicked(self, item: QtWidgets.QTableWidgetItem) -> None:
         # store the highlighted row, but do not finalize selection until user presses Select
@@ -390,10 +507,12 @@ class LotControl(Control):
             print(f"LotControl: Sarjanumero {serial}")
             tid = getattr(test_data, "id", None)
             passed = getattr(test_data, "passed", None)
-            # Prefer the current PCB Lot field value if available, otherwise use test_data.pcb_lot if present
+            # Prefer an explicitly set PCB Lot (via the 'Set' button), fall back to input field, then test_data
             pcb_lot = None
             try:
-                if hasattr(self, "pcb_lot_field") and self.pcb_lot_field.text().strip():
+                if getattr(self, "pcb_lot_value", None):
+                    pcb_lot = self.pcb_lot_value
+                elif hasattr(self, "pcb_lot_field") and self.pcb_lot_field.text().strip():
                     pcb_lot = self.pcb_lot_field.text().strip()
                 else:
                     pcb_lot = getattr(test_data, "pcb_lot", None)
@@ -438,6 +557,9 @@ class LotControl(Control):
 
         # Save the TestData contents as JSON: results_<serial>_<id>.json
         results_meta_file = sample_dir / f"results_{serial}_{tid}.json"
+        results_table_file = sample_dir / f"table_{serial}_{tid}.csv"
+        results_table = []
+        
         try:
             # Build a JSON-friendly representation
             # Determine test spec checksum from SweepEvaluate if available
@@ -462,9 +584,11 @@ class LotControl(Control):
                 setattr(test_data, "test_checksum", test_checksum_val)
             except Exception:
                 pass
+        
             for r in results:
                 tp = getattr(r, "tp", None)
                 tp_dict = None
+                table_dict={}
                 if tp is not None:
                     tp_dict = {
                         "name": getattr(tp, "name", None),
@@ -474,6 +598,17 @@ class LotControl(Control):
                         "limit_db": getattr(tp, "limit_db", None),
                         "direction": getattr(tp, "direction", None),
                     }
+
+                table_dict = {
+                    "passed": getattr(r, "passed", None),
+                    "min": getattr(r, "min", None),
+                    "max": getattr(r, "max", None),
+                    "samples": getattr(r, "samples", None),
+                }
+
+                table_dict = {**table_dict, **tp_dict} if tp_dict else table_dict
+                results_table.append(table_dict)
+
                 jt["results"].append({
                     "tp": tp_dict,
                     "passed": getattr(r, "passed", None),
@@ -482,9 +617,22 @@ class LotControl(Control):
                     "failing": getattr(r, "failing", None),
                     "samples": getattr(r, "samples", None),
                 })
+            
+            import csv as _csv
+            try:
+                p = Path(results_table_file)
+                fieldnames = ["name", "parameter", "frequency", "span", "limit_db", "direction", "passed", "min", "max", "samples"]
+                with p.open("w", encoding="utf-8", newline="") as f:
+                    writer = _csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results_table)
+            except Exception:
+                logger.exception("Failed writing result CSV table to %s", p)
+         
             with results_meta_file.open("w", encoding="utf-8") as f:
                 json.dump(jt, f, indent=2)
             saved_any = True
+
         except Exception:
             logger.exception("Failed saving TestData JSON %s", results_meta_file)
 
@@ -492,8 +640,8 @@ class LotControl(Control):
         from ..Windows.Files import FilesWindow
 
         try:
-            saved_s1 = FilesWindow.exportFileToDir(self, str(sample_dir), filename=f"{serial}_{tid}_s1p.s1p", nr_params=1)
-            logger.info("Saved full S1P for TestData %s to %s", tid, saved_s1)
+            #saved_s1 = FilesWindow.exportFileToDir(self, str(sample_dir), filename=f"{serial}_{tid}_s1p.s1p", nr_params=1)
+            #logger.info("Saved full S1P for TestData %s to %s", tid, saved_s1)
             saved_s2 = FilesWindow.exportFileToDir(self, str(sample_dir), filename=f"{serial}_{tid}_s2p.s2p", nr_params=4)
             logger.info("Saved full S2P for TestData %s to %s", tid, saved_s2)
 
@@ -524,27 +672,79 @@ class LotControl(Control):
         lot_name = self.current_lot_name
         if lot_name and saved_any:
             self.lot_samples[lot_name] = self.lot_samples.get(lot_name, 0) + 1
-            # Ensure counters exist
-            self.lot_passed[lot_name] = self.lot_passed.get(lot_name, 0)
-            self.lot_failed[lot_name] = self.lot_failed.get(lot_name, 0)
-            # Increment pass/fail based on TestData.passed (True/False)
-            if passed is True:
-                self.lot_passed[lot_name] += 1
-            elif passed is False:
-                self.lot_failed[lot_name] += 1
+
+            # Ensure unit tracking structures exist
+            units = self.lot_units.get(lot_name, [])
+            passed_units = self.lot_passed_units.get(lot_name, 0)
+            failed_units = self.lot_failed_units.get(lot_name, 0)
+
+            # Unit identifier: prefer serial, fallback to tid if no serial present
+            unit_id = str(serial) if serial else str(tid)
+
+            # Update units list and counts only when TestData.passed is a boolean
+            if isinstance(passed, bool):
+                # Find existing entry
+                found_index = None
+                for i, u in enumerate(units):
+                    try:
+                        if str(u[0]) == unit_id:
+                            found_index = i
+                            break
+                    except Exception:
+                        continue
+
+                if found_index is None:
+                    # New unit: append and update counts
+                    units.append([unit_id, bool(passed)])
+                    if passed:
+                        passed_units += 1
+                    else:
+                        failed_units += 1
+                else:
+                    # Existing unit: check state transitions
+                    existing_passed = bool(units[found_index][1])
+                    if passed and not existing_passed:
+                        # Failure -> pass transition
+                        units[found_index][1] = True
+                        passed_units += 1
+                        failed_units = max(0, failed_units - 1)
+                    elif not passed and existing_passed:
+                        # Pass -> failure transition
+                        units[found_index][1] = False
+                        failed_units += 1
+                        passed_units = max(0, passed_units - 1)
+                    else:
+                        # No state change
+                        pass
+
+            # Persist updated state back to internal structures
+            self.lot_units[lot_name] = units
+            self.lot_passed_units[lot_name] = passed_units
+            self.lot_failed_units[lot_name] = failed_units
+            # Keep compatibility fields used by UI
+            self.lot_passed[lot_name] = passed_units
+            self.lot_failed[lot_name] = failed_units
+
+            # Compute yield: passed_units / total units
+            try:
+                yield_val = float(passed_units) / len(units) if len(units) else 0.0
+            except Exception:
+                yield_val = 0.0
 
             info_file = out_dir / f"{lot_name}.json"
             try:
                 info = {
                     "lot_name": lot_name,
                     "samples": int(self.lot_samples[lot_name]),
-                    "passed": int(self.lot_passed[lot_name]),
-                    "failed": int(self.lot_failed[lot_name]),
+                    "passed_units": int(self.lot_passed_units[lot_name]),
+                    "failed_units": int(self.lot_failed_units[lot_name]),
+                    "yield": float(yield_val),
                     "checksum": self.lot_checksum.get(lot_name, None),
                     "creation_date": datetime.now().isoformat(),
+                    "units": list(self.lot_units.get(lot_name, [])),
                 }
                 with info_file.open("w", encoding="utf-8") as f:
-                    json.dump(info, f, indent=2)
+                    json.dump(info, f, indent=2)    
             except Exception:
                 logger.exception("Failed updating lot info %s", info_file)
 
@@ -553,6 +753,16 @@ class LotControl(Control):
             self.samples_label.setText(str(self.lot_samples.get(self.current_lot_name, 0)))
             self.passed_label.setText(str(self.lot_passed.get(self.current_lot_name, 0)))
             self.failed_label.setText(str(self.lot_failed.get(self.current_lot_name, 0)))
+            # Update yield display
+            try:
+                passed = self.lot_passed.get(self.current_lot_name, 0)
+                failed = self.lot_failed.get(self.current_lot_name, 0)
+                total = passed + failed
+                yield_pct = (float(passed) / total * 100.0) if total else 0.0
+            except Exception:
+                yield_pct = 0.0
+            if hasattr(self, "yield_label"):
+                self.yield_label.setText(f"{yield_pct:.2f}%")
 
         # Append a CSV log entry for this test data to a per-lot CSV file
         try:

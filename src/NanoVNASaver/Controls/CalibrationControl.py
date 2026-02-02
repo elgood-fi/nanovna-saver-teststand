@@ -55,7 +55,7 @@ class CalibrationControl(Control):
         # Load button
         self.btn_load = QtWidgets.QPushButton("Load calibration")
         self.btn_load.setMinimumHeight(20)
-        self.btn_load.clicked.connect(CalibrationWindow.loadCalibration())
+        #self.btn_load.clicked.connect(CalibrationWindow.loadCalibration())
         self.layout.addRow(self.btn_load)
     '''
     def loadCalibration(self):

@@ -110,3 +110,13 @@ def test_autosave_on_evaluate(tmp_path):
     with info_file.open("r", encoding="utf-8") as f:
         info = json.load(f)
     assert info.get("samples", 0) == 1
+    # New: verify units list and counts
+    units = info.get("units")
+    assert isinstance(units, list) and any(u[0] == td.serial for u in units)
+    assert info.get("passed_units") == 1
+    assert info.get("failed_units") == 0
+    assert abs(info.get("yield", 0.0) - 1.0) < 1e-6
+    # Verify ordering: units should be the last key in the JSON
+    keys = list(info.keys())
+    assert keys[-1] == "units"
+
